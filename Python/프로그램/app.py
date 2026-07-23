@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 import traceback
@@ -28,7 +28,7 @@ from update_service import RELEASE_PAGE, ReleaseInfo, UpdateError, download_asse
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.10"
+APP_VERSION = "1.1.11"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 
