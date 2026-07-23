@@ -11,8 +11,11 @@ from update_service import (
     ReleaseAsset,
     UpdateError,
     download_asset,
+    fetch_latest_release,
     is_newer_version,
+    parse_checksum_manifest,
     parse_release,
+    parse_release_feed,
     verify_downloaded_asset,
 )
 
@@ -39,6 +42,54 @@ def release_payload(content: bytes = b"setup-data") -> dict:
 
 
 class UpdateServiceTests(unittest.TestCase):
+    def test_release_feed_selects_highest_tag_and_checksum_for_exact_build(self) -> None:
+        feed = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry><title>older</title><updated>2026-07-22T00:00:00Z</updated>
+            <link href="https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/tag/v1.1.15"/>
+            <content type="html">old</content></entry>
+          <entry><title>latest</title><updated>2026-07-23T00:00:00Z</updated>
+            <link href="https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/tag/v1.1.16"/>
+            <content type="html">&lt;b&gt;notes&lt;/b&gt;</content></entry>
+        </feed>"""
+        version, tag, title, metadata = parse_release_feed(feed)
+        self.assertEqual((version, tag, title), ("1.1.16", "v1.1.16", "latest"))
+        self.assertIn("notes", metadata)
+        name = "C-Call-Hierarchy-Explorer-Setup-1.1.16.exe"
+        digest = "a" * 64
+        self.assertEqual(parse_checksum_manifest(f"{digest}  {name}\n", name), digest)
+
+    def test_latest_release_requires_matching_tag_checksum_and_build(self) -> None:
+        feed = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+          <title>C Call Hierarchy Explorer v1.1.16</title>
+          <updated>2026-07-23T00:00:00Z</updated>
+          <link href="https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/tag/v1.1.16"/>
+          <content type="html">notes</content>
+        </entry></feed>"""
+        name = "C-Call-Hierarchy-Explorer-Setup-1.1.16.exe"
+        digest = "b" * 64
+
+        class Response(io.BytesIO):
+            def __init__(self, value: bytes, url: str = "https://github.com/", size: int = 0):
+                super().__init__(value)
+                self._url = url
+                self.headers = {"Content-Length": str(size)}
+
+            def geturl(self) -> str:
+                return self._url
+
+        responses = [
+            Response(feed),
+            Response(f"{digest}  {name}\n".encode()),
+            Response(b"", "https://objects.githubusercontent.com/setup.exe", 12345),
+        ]
+        with patch("urllib.request.urlopen", side_effect=responses):
+            release = fetch_latest_release()
+        self.assertEqual(release.tag, "v1.1.16")
+        self.assertEqual(release.setup.name, name)
+        self.assertEqual(release.setup.size, 12345)
+        self.assertEqual(release.setup.sha256, digest)
+
     def test_semantic_version_comparison(self) -> None:
         self.assertTrue(is_newer_version("1.10.0", "1.9.9"))
         self.assertTrue(is_newer_version("v1.1.9", "1.1.8"))

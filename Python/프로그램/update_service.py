@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
 import tempfile
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -19,6 +21,7 @@ LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/latest"
 )
 RELEASE_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/latest"
+RELEASE_FEED = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases.atom"
 USER_AGENT = f"{GITHUB_REPOSITORY}-Updater"
 
 
@@ -109,7 +112,93 @@ def parse_release(payload: dict) -> ReleaseInfo:
     )
 
 
+def parse_release_feed(payload: bytes) -> tuple[str, str, str, str]:
+    """Return the highest stable version published in GitHub's release feed."""
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as error:
+        raise UpdateError("GitHub 릴리스 태그 목록을 해석하지 못했습니다.") from error
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    releases: list[tuple[tuple[int, ...], str, str, str, str, str]] = []
+    for entry in root.findall("atom:entry", namespace):
+        link = entry.find("atom:link", namespace)
+        href = str(link.get("href") if link is not None else "")
+        match = re.search(r"/releases/tag/(?P<tag>v\d+\.\d+\.\d+)$", href)
+        if not match:
+            continue
+        tag = match.group("tag")
+        version = ".".join(str(part) for part in version_tuple(tag))
+        title = entry.findtext("atom:title", tag, namespace)
+        published = entry.findtext("atom:updated", "", namespace)
+        raw_notes = entry.findtext("atom:content", "", namespace)
+        notes = html.unescape(re.sub(r"<[^>]+>", "", raw_notes)).strip()
+        releases.append((version_tuple(version), version, tag, title, published, notes))
+    if not releases:
+        raise UpdateError("GitHub 릴리스 피드에서 정식 버전 태그를 찾지 못했습니다.")
+    _, version, tag, title, published, notes = max(releases, key=lambda item: item[0])
+    return version, tag, title, published + "\n" + notes
+
+
+def parse_checksum_manifest(payload: str, expected_name: str) -> str:
+    for line in payload.splitlines():
+        match = re.fullmatch(r"\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*", line)
+        if match and match.group(2).casefold() == expected_name.casefold():
+            return match.group(1).lower()
+    raise UpdateError(f"SHA256SUMS.txt에서 설치 파일 검증값을 찾지 못했습니다: {expected_name}")
+
+
+def fetch_latest_release_from_feed(timeout: float = 15.0) -> ReleaseInfo:
+    try:
+        feed_request = urllib.request.Request(RELEASE_FEED, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(feed_request, timeout=timeout) as response:
+            version, tag, title, metadata = parse_release_feed(response.read())
+        published_at, _, notes = metadata.partition("\n")
+
+        setup_name = f"C-Call-Hierarchy-Explorer-Setup-{version}.exe"
+        asset_base = (
+            f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/download/{tag}"
+        )
+        checksum_request = urllib.request.Request(
+            f"{asset_base}/SHA256SUMS.txt",
+            headers={"User-Agent": USER_AGENT},
+        )
+        with urllib.request.urlopen(checksum_request, timeout=timeout) as response:
+            digest = parse_checksum_manifest(response.read().decode("utf-8-sig"), setup_name)
+
+        setup_url = f"{asset_base}/{setup_name}"
+        setup_request = urllib.request.Request(
+            setup_url,
+            headers={"User-Agent": USER_AGENT},
+            method="HEAD",
+        )
+        with urllib.request.urlopen(setup_request, timeout=timeout) as response:
+            final_url = response.geturl()
+            size = int(response.headers.get("Content-Length") or 0)
+        if not _trusted_https(final_url) or size <= 0:
+            raise UpdateError(f"{tag} 설치 빌드 파일을 확인하지 못했습니다: {setup_name}")
+    except urllib.error.HTTPError as error:
+        raise UpdateError(f"GitHub 최신 태그 또는 빌드 확인 실패 (HTTP {error.code})") from error
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise UpdateError(f"GitHub 최신 태그 또는 빌드 서버에 연결하지 못했습니다: {error}") from error
+    except (ValueError, TypeError, UnicodeError) as error:
+        raise UpdateError("GitHub 최신 태그 또는 빌드 정보를 해석하지 못했습니다.") from error
+    return ReleaseInfo(
+        version=version,
+        tag=tag,
+        title=title or tag,
+        notes=notes or "릴리스 설명이 없습니다.",
+        page_url=f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/tag/{tag}",
+        published_at=published_at,
+        setup=ReleaseAsset(setup_name, setup_url, size, digest),
+    )
+
+
 def fetch_latest_release(timeout: float = 15.0) -> ReleaseInfo:
+    """Check the latest tag and its exact build without consuming GitHub API quota."""
+    return fetch_latest_release_from_feed(timeout)
+
+
+def fetch_latest_release_from_api(timeout: float = 15.0) -> ReleaseInfo:
     request = urllib.request.Request(
         LATEST_RELEASE_API,
         headers={

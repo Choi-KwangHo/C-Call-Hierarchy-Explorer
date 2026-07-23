@@ -97,7 +97,7 @@ class VirtualTreeTests(unittest.TestCase):
         self.assertEqual(activated[-1], "")
         widget.close()
 
-    def test_mouse_drag_scrolls_whole_cells_without_moving_selection(self) -> None:
+    def test_mouse_drag_pans_to_cell_boundaries_without_moving_selection(self) -> None:
         rows = [ViewRow(kind="section", title="MAIN")]
         for index in range(30):
             rows.append(ViewRow(
@@ -110,7 +110,7 @@ class VirtualTreeTests(unittest.TestCase):
         rows.append(ViewRow(kind="spacer"))
         widget = CallTreeWidget()
         widget.resize(620, 260)
-        widget.set_view(CallView(rows, 5, [], "main", 0), False)
+        widget.set_view(CallView(rows, 6, [], "main", 0), False)
         widget.show()
         self.app.processEvents()
 
@@ -120,17 +120,24 @@ class VirtualTreeTests(unittest.TestCase):
         body._set_current(selected_index)
         selected = body._selected_key
         QTest.mousePress(body.viewport(), Qt.LeftButton, pos=start)
+        self.assertTrue(body._drag_scrolling)
+        body.verticalScrollBar().setValue(FUNCTION_HEIGHT * 10)
+        body.horizontalScrollBar().setValue(COLUMN_WIDTH * 2)
+        body._drag_start_vertical = body.verticalScrollBar().value()
+        body._drag_start_horizontal = body.horizontalScrollBar().value()
+        start_vertical = body._drag_start_vertical
+        start_horizontal = body._drag_start_horizontal
 
-        body._drag_position = start + QPoint(30, 30)
+        body._drag_position = start + QPoint(COLUMN_WIDTH * 2 + 20, FUNCTION_HEIGHT * 2 + 3)
         body._drag_scroll_step()
-        self.assertEqual(body.verticalScrollBar().value(), FUNCTION_HEIGHT)
-        self.assertEqual(body.horizontalScrollBar().value(), COLUMN_WIDTH)
+        self.assertEqual(body.verticalScrollBar().value(), start_vertical - FUNCTION_HEIGHT * 2)
+        self.assertEqual(body.horizontalScrollBar().value(), max(0, start_horizontal - COLUMN_WIDTH * 2))
         self.assertEqual(body._selected_key, selected)
 
-        body._drag_position = start - QPoint(30, 30)
+        body._drag_position = start - QPoint(COLUMN_WIDTH + 30, FUNCTION_HEIGHT * 3 + 4)
         body._drag_scroll_step()
-        self.assertEqual(body.verticalScrollBar().value(), 0)
-        self.assertEqual(body.horizontalScrollBar().value(), 0)
+        self.assertEqual(body.verticalScrollBar().value(), start_vertical + FUNCTION_HEIGHT * 3)
+        self.assertEqual(body.horizontalScrollBar().value(), start_horizontal + COLUMN_WIDTH)
         self.assertEqual(body._selected_key, selected)
 
         QTest.mouseRelease(body.viewport(), Qt.LeftButton, pos=start)

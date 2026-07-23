@@ -119,9 +119,8 @@ class VirtualCallBody(QAbstractScrollArea):
         self._drag_scrolling = False
         self._drag_anchor = QPoint()
         self._drag_position = QPoint()
-        self._drag_timer = QTimer(self)
-        self._drag_timer.setInterval(80)
-        self._drag_timer.timeout.connect(self._drag_scroll_step)
+        self._drag_start_horizontal = 0
+        self._drag_start_vertical = 0
         self._offsets = [0]
         self._total_height = 0
         self.setFont(QFont("Consolas", 9))
@@ -663,6 +662,8 @@ class VirtualCallBody(QAbstractScrollArea):
                 self._drag_scrolling = True
                 self._drag_anchor = event.position().toPoint()
                 self._drag_position = event.position().toPoint()
+                self._drag_start_horizontal = self.horizontalScrollBar().value()
+                self._drag_start_vertical = self.verticalScrollBar().value()
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -675,8 +676,6 @@ class VirtualCallBody(QAbstractScrollArea):
                 return
             self._drag_position = event.position().toPoint()
             self._drag_scroll_step()
-            if not self._drag_timer.isActive():
-                self._drag_timer.start()
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -690,22 +689,18 @@ class VirtualCallBody(QAbstractScrollArea):
 
     def _finish_drag_scroll(self) -> None:
         self._drag_scrolling = False
-        self._drag_timer.stop()
 
     def _drag_scroll_step(self) -> None:
-        """Scroll by whole cells while the pressed pointer is displaced from its anchor."""
+        """Pan by the pointer distance, snapped to whole row/column boundaries."""
         if not self._drag_scrolling or not self._view.rows:
             return
         delta = self._drag_position - self._drag_anchor
-        threshold = 8
-        if abs(delta.y()) >= threshold:
-            direction = 1 if delta.y() > 0 else -1
-            vertical = self.verticalScrollBar()
-            vertical.setValue(vertical.value() + direction * FUNCTION_HEIGHT)
-        if abs(delta.x()) >= threshold:
-            direction = 1 if delta.x() > 0 else -1
-            horizontal = self.horizontalScrollBar()
-            horizontal.setValue(horizontal.value() + direction * COLUMN_WIDTH)
+        vertical_cells = (abs(delta.y()) + FUNCTION_HEIGHT // 2) // FUNCTION_HEIGHT
+        horizontal_cells = (abs(delta.x()) + COLUMN_WIDTH // 2) // COLUMN_WIDTH
+        vertical_delta = vertical_cells * FUNCTION_HEIGHT * (1 if delta.y() >= 0 else -1)
+        horizontal_delta = horizontal_cells * COLUMN_WIDTH * (1 if delta.x() >= 0 else -1)
+        self.verticalScrollBar().setValue(self._drag_start_vertical - vertical_delta)
+        self.horizontalScrollBar().setValue(self._drag_start_horizontal - horizontal_delta)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton and self._view.rows:

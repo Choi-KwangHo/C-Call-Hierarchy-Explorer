@@ -2,12 +2,12 @@
 
 `.c`와 `.h` 파일을 Tree-sitter로 빠르게 파싱하고, libclang으로 실제 심볼 참조를 보강한 뒤 PySide6 가상 스크롤 UI에 호출 단계를 표시합니다.
 
-현재 개발 소스와 배포 버전은 `1.1.16`입니다. `Python\배포\C Call Hierarchy Explorer 1.1.16` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
+현재 개발 소스와 배포 버전은 `1.1.17`입니다. `Python\배포\C Call Hierarchy Explorer 1.1.17` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
 
 ## 설치 배포본
 
-- `C-Call-Hierarchy-Explorer-Setup-1.1.16.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
-- `C-Call-Hierarchy-Explorer-Portable-1.1.16.exe`: 설치 없이 실행하는 포터블 버전입니다.
+- `C-Call-Hierarchy-Explorer-Setup-1.1.17.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
+- `C-Call-Hierarchy-Explorer-Portable-1.1.17.exe`: 설치 없이 실행하는 포터블 버전입니다.
 - Windows 설정의 **설치된 앱**에서 제거할 수 있습니다.
 - `packaging\build_release.ps1`은 실행 파일 진단, 설치 파일 생성, SHA-256 파일 생성을 자동으로 수행합니다.
 
