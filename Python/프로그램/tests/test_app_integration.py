@@ -16,7 +16,7 @@ from PySide6.QtGui import QDesktopServices, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox  # noqa: E402
 
-from app import APP_VERSION, MainWindow, compact_file_path, sanitize_recent_folders, unique_output_path  # noqa: E402
+from app import APP_VERSION, RELEASE_PAGE, MainWindow, compact_file_path, sanitize_recent_folders, unique_output_path  # noqa: E402
 from project_cache import ProjectCacheStore  # noqa: E402
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions  # noqa: E402
 
@@ -51,6 +51,10 @@ class AppIntegrationTests(unittest.TestCase):
             window.file_action.setChecked(True)
             window.source_action.setChecked(True)
             self.assertEqual(window.source_action.text(), "CODE 미리보기")
+            self.assertEqual(window.release_action.text(), "GitHub releases/latest 열기")
+            with patch.object(QDesktopServices, "openUrl", return_value=True) as open_release:
+                window.release_action.trigger()
+            self.assertEqual(open_release.call_args.args[0].toString(), RELEASE_PAGE)
             window.auto_check.setChecked(False)
             window._open_folder(str(root))
             self._wait(window)
@@ -143,6 +147,17 @@ class AppIntegrationTests(unittest.TestCase):
             window._clear_pending_update()
             window.close()
 
+    def test_startup_checks_for_updates_once_on_every_launch(self) -> None:
+        window = MainWindow()
+        window._clear_pending_update()
+        window.settings.setValue("update/checkOnStartup", True)
+        window.settings.setValue("update/lastCheckEpoch", time.time())
+        with patch.object(window, "_check_program_update") as check:
+            window._startup_update_check()
+            window._startup_update_check()
+        check.assert_called_once_with(False)
+        window.close()
+
     def test_recent_folders_remove_test_temporary_paths_and_duplicates(self) -> None:
         legitimate = Path.home() / "Documents" / "C-Call-Hierarchy-Recent-Test"
         with tempfile.TemporaryDirectory() as temporary:
@@ -171,7 +186,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.1.13")
+        self.assertEqual(APP_VERSION, "1.1.14")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:

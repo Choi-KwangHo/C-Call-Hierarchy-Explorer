@@ -31,7 +31,7 @@ from update_service import (
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.13"
+APP_VERSION = "1.1.14"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 
@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self._combo_refresh = False
         self._pending_manual_check = False
         self._refresh_after_cache = False
+        self._startup_update_checked = False
         self._restoring_state = True
         self._cache_dirty = False
         self._cache_generation = 0
@@ -391,9 +392,9 @@ class MainWindow(QMainWindow):
         update_test_action.triggered.connect(self._test_update_download)
         help_menu.addAction(update_test_action)
         help_menu.addSeparator()
-        release_action = QAction("GitHub 릴리스 페이지", self)
-        release_action.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(RELEASE_PAGE)))
-        help_menu.addAction(release_action)
+        self.release_action = QAction("GitHub releases/latest 열기", self)
+        self.release_action.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(RELEASE_PAGE)))
+        help_menu.addAction(self.release_action)
         about_action = QAction("프로그램 정보", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
@@ -1145,25 +1146,36 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Excel 저장 완료 · 자동 열기 실패: {saved}")
 
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "프로그램 정보",
+        box = QMessageBox(self)
+        box.setWindowTitle("프로그램 정보")
+        box.setIconPixmap(self.windowIcon().pixmap(56, 56))
+        box.setTextFormat(Qt.RichText)
+        box.setText(
             f"<b>{APP_NAME}</b><br>버전 {APP_VERSION}<br><br>"
             "C 소스 함수 호출 관계 분석 및 트리 탐색기<br><br>"
-            f'<a href="{RELEASE_PAGE}">GitHub 릴리스 페이지</a>',
+            f'<a href="{RELEASE_PAGE}">GitHub releases/latest 열기</a>'
         )
+        box.setStandardButtons(QMessageBox.Ok)
+        for label in box.findChildren(QLabel):
+            label.setOpenExternalLinks(True)
+            label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        box.exec()
 
     def _startup_update_check(self) -> None:
-        if self._closing or not self.settings.value("update/checkOnStartup", True, type=bool):
+        if (
+            self._closing
+            or self._startup_update_checked
+            or not self.settings.value("update/checkOnStartup", True, type=bool)
+        ):
             return
         if self.busy:
             QTimer.singleShot(15000, self._startup_update_check)
             return
         if self._offer_pending_update_retry():
+            self._startup_update_checked = True
             return
-        last_check = float(self.settings.value("update/lastCheckEpoch", 0) or 0)
-        if time.time() - last_check >= 24 * 60 * 60:
-            self._check_program_update(False)
+        self._startup_update_checked = True
+        self._check_program_update(False)
 
     def _start_update_task(
         self,
