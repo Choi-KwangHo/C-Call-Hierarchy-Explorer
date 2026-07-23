@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [switch]$CheckOnly
 )
@@ -145,18 +145,18 @@ while ((Get-Date) -lt $releaseDeadline) {
         $missingAssets = @($expectedAssets | Where-Object { $_ -notin $assetNames })
         if (-not $release.draft -and $missingAssets.Count -eq 0) {
             $releaseReady = $true
-            Write-Host "Release published: $($release.html_url)" -ForegroundColor Green
+            Write-Host "GitHub 릴리스 게시 완료: $($release.html_url)" -ForegroundColor Green
             break
         }
     } catch {
         $statusCode = $_.Exception.Response.StatusCode.value__
         if ($statusCode -and $statusCode -ne 404) {
-            Write-Verbose "Release status check failed: $($_.Exception.Message)"
+            Write-Verbose "GitHub 릴리스 상태 확인 실패: $($_.Exception.Message)"
         }
     }
-    Write-Host "GitHub Actions is still building $tag..."
+    Write-Host "GitHub Actions에서 $tag 설치 파일을 빌드하고 있습니다..."
     Start-Sleep -Seconds 10
 }
 if (-not $releaseReady) {
-    Write-Warning "The tag was pushed, but GitHub Release was not ready within 15 minutes: $tag"
+    Write-Warning "$tag 태그 전송은 완료되었지만 15분 안에 GitHub 릴리스가 준비되지 않았습니다."
 }

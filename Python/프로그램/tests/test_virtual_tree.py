@@ -11,7 +11,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from analyzer import CallView, ViewRow  # noqa: E402
-from virtual_tree import COLUMN_WIDTH, CallTreeWidget  # noqa: E402
+from virtual_tree import COLUMN_WIDTH, FUNCTION_HEIGHT, CallTreeWidget  # noqa: E402
 
 
 def make_view(extra_grandchild: bool = False) -> CallView:
@@ -97,30 +97,44 @@ class VirtualTreeTests(unittest.TestCase):
         self.assertEqual(activated[-1], "")
         widget.close()
 
-    def test_mouse_drag_moves_selection_between_cells_in_each_direction(self) -> None:
+    def test_mouse_drag_scrolls_whole_cells_without_moving_selection(self) -> None:
+        rows = [ViewRow(kind="section", title="MAIN")]
+        for index in range(30):
+            rows.append(ViewRow(
+                kind="function",
+                depth=1,
+                name=f"task_{index}",
+                node_key=f"r/task#{index}",
+                path_names=(f"task_{index}",),
+            ))
+        rows.append(ViewRow(kind="spacer"))
         widget = CallTreeWidget()
-        widget.resize(900, 400)
-        widget.set_view(make_view(), False)
+        widget.resize(620, 260)
+        widget.set_view(CallView(rows, 5, [], "main", 0), False)
         widget.show()
         self.app.processEvents()
 
         body = widget.body
-        task = QPoint(COLUMN_WIDTH + 100, body._offsets[2] + 10)
-        work = QPoint(COLUMN_WIDTH * 2 + 100, body._offsets[3] + 10)
-        task_at_work_row = QPoint(COLUMN_WIDTH + 100, body._offsets[3] + 10)
-        other = QPoint(COLUMN_WIDTH + 100, body._offsets[4] + 10)
-        QTest.mousePress(body.viewport(), Qt.LeftButton, pos=task)
-        self.assertEqual(body._selected_key, "r/task#1")
-        QTest.mouseMove(body.viewport(), work)
-        self.assertEqual(body._selected_key, "r/task#1/work#1")
-        QTest.mouseMove(body.viewport(), task_at_work_row)
-        self.assertEqual(body._selected_key, "r/task#1")
-        QTest.mouseMove(body.viewport(), other)
-        self.assertEqual(body._selected_key, "r/other#1")
-        QTest.mouseMove(body.viewport(), task)
-        self.assertEqual(body._selected_key, "r/task#1")
-        QTest.mouseRelease(body.viewport(), Qt.LeftButton, pos=task)
-        self.assertFalse(body._drag_selecting)
+        start = QPoint(100, body.viewport().height() // 2)
+        selected_index = body._cell_index_at(start.x(), start.y())
+        body._set_current(selected_index)
+        selected = body._selected_key
+        QTest.mousePress(body.viewport(), Qt.LeftButton, pos=start)
+
+        body._drag_position = start + QPoint(30, 30)
+        body._drag_scroll_step()
+        self.assertEqual(body.verticalScrollBar().value(), FUNCTION_HEIGHT)
+        self.assertEqual(body.horizontalScrollBar().value(), COLUMN_WIDTH)
+        self.assertEqual(body._selected_key, selected)
+
+        body._drag_position = start - QPoint(30, 30)
+        body._drag_scroll_step()
+        self.assertEqual(body.verticalScrollBar().value(), 0)
+        self.assertEqual(body.horizontalScrollBar().value(), 0)
+        self.assertEqual(body._selected_key, selected)
+
+        QTest.mouseRelease(body.viewport(), Qt.LeftButton, pos=start)
+        self.assertFalse(body._drag_scrolling)
         widget.close()
 
     def test_stage_header_toggles_every_subtree_at_that_depth(self) -> None:

@@ -32,7 +32,7 @@ from update_service import (
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.15"
+APP_VERSION = "1.1.16"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 

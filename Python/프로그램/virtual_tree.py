@@ -116,11 +116,12 @@ class VirtualCallBody(QAbstractScrollArea):
         self._search_position = -1
         self._selected_key = ""
         self._current_index = -1
-        self._drag_selecting = False
+        self._drag_scrolling = False
+        self._drag_anchor = QPoint()
         self._drag_position = QPoint()
         self._drag_timer = QTimer(self)
         self._drag_timer.setInterval(80)
-        self._drag_timer.timeout.connect(self._drag_select_step)
+        self._drag_timer.timeout.connect(self._drag_scroll_step)
         self._offsets = [0]
         self._total_height = 0
         self.setFont(QFont("Consolas", 9))
@@ -139,7 +140,7 @@ class VirtualCallBody(QAbstractScrollArea):
         return FUNCTION_HEIGHT
 
     def set_view(self, view: CallView, preserve_scroll: bool = True) -> None:
-        self._finish_drag_selection()
+        self._finish_drag_scroll()
         old_y = self.verticalScrollBar().value() if preserve_scroll else 0
         old_x = self.horizontalScrollBar().value() if preserve_scroll else 0
         old_collapsed = set(self._collapsed) if preserve_scroll else set()
@@ -659,20 +660,21 @@ class VirtualCallBody(QAbstractScrollArea):
                 if column_x <= event.position().x() <= column_x + 28 and self._toggle_row(index):
                     event.accept()
                     return
-                self._drag_selecting = True
+                self._drag_scrolling = True
+                self._drag_anchor = event.position().toPoint()
                 self._drag_position = event.position().toPoint()
                 event.accept()
                 return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._drag_selecting:
+        if self._drag_scrolling:
             if not (event.buttons() & Qt.LeftButton):
-                self._finish_drag_selection()
+                self._finish_drag_scroll()
                 event.accept()
                 return
             self._drag_position = event.position().toPoint()
-            self._drag_select_step()
+            self._drag_scroll_step()
             if not self._drag_timer.isActive():
                 self._drag_timer.start()
             event.accept()
@@ -680,61 +682,30 @@ class VirtualCallBody(QAbstractScrollArea):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.LeftButton and self._drag_selecting:
-            self._drag_position = event.position().toPoint()
-            self._drag_select_step()
-            self._finish_drag_selection()
+        if event.button() == Qt.LeftButton and self._drag_scrolling:
+            self._finish_drag_scroll()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
-    def _finish_drag_selection(self) -> None:
-        self._drag_selecting = False
+    def _finish_drag_scroll(self) -> None:
+        self._drag_scrolling = False
         self._drag_timer.stop()
 
-    def _drag_select_step(self) -> None:
-        if not self._drag_selecting or not self._view.rows:
+    def _drag_scroll_step(self) -> None:
+        """Scroll by whole cells while the pressed pointer is displaced from its anchor."""
+        if not self._drag_scrolling or not self._view.rows:
             return
-        position = self._drag_position
-        viewport = self.viewport()
-        width = max(1, viewport.width())
-        height = max(1, viewport.height())
-        edge = 8
-        if position.y() < edge:
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - FUNCTION_HEIGHT)
-        elif position.y() >= height - edge:
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() + FUNCTION_HEIGHT)
-        if position.x() < edge:
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - COLUMN_WIDTH)
-        elif position.x() >= width - edge:
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + COLUMN_WIDTH)
-
-        x = max(0, min(width - 1, position.x()))
-        y = max(0, min(height - 1, position.y()))
-        target = self._cell_index_at(x, y)
-        if target >= 0 and target != self._current_index:
-            self._set_current(target)
-            return
-        if self._current_index < 0:
-            return
-        current_rect = self._cell_rect(
-            self._current_index,
-            self.horizontalScrollBar().value(),
-            self.verticalScrollBar().value(),
-        )
-        current = self._view.rows[self._current_index]
-        if position.x() < current_rect.left() and current.parent_key:
-            parent = self._index_by_key.get(current.parent_key, -1)
-            if parent >= 0:
-                self._set_current(parent)
-        elif position.x() > current_rect.right():
-            children = self._children.get(self._current_index, [])
-            if children:
-                self._set_current(children[0])
-        elif position.y() < current_rect.top():
-            self._set_current(self._adjacent_function(self._current_index, -1))
-        elif position.y() > current_rect.bottom():
-            self._set_current(self._adjacent_function(self._current_index, 1))
+        delta = self._drag_position - self._drag_anchor
+        threshold = 8
+        if abs(delta.y()) >= threshold:
+            direction = 1 if delta.y() > 0 else -1
+            vertical = self.verticalScrollBar()
+            vertical.setValue(vertical.value() + direction * FUNCTION_HEIGHT)
+        if abs(delta.x()) >= threshold:
+            direction = 1 if delta.x() > 0 else -1
+            horizontal = self.horizontalScrollBar()
+            horizontal.setValue(horizontal.value() + direction * COLUMN_WIDTH)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton and self._view.rows:
