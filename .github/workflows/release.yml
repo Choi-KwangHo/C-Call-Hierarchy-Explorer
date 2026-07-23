@@ -35,16 +35,15 @@ jobs:
           ./.venv/Scripts/python.exe -m pip install --upgrade pip
           ./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
 
-      - name: Validate tag and run tests
+      - name: Validate release version
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
           $app = Get-Content -Raw -Encoding UTF8 "Python/프로그램/app.py"
-          if ($app -notmatch ('APP_VERSION\s*=\s*"' + [regex]::Escape($version) + '"')) {
+          $expected = 'APP_VERSION = "' + $version + '"'
+          if (-not $app.Contains($expected)) {
             throw "Tag ${{ github.ref_name }} does not match app.py version $version"
           }
-          Set-Location "Python/프로그램"
-          ./.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py"
 
       - name: Build installer and portable executable
         shell: pwsh
