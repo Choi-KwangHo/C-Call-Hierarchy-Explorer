@@ -1,12 +1,16 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "C Call Hierarchy Explorer"
-$appVersion = "1.1.11"
+$appVersion = "1.1.12"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
 $versionInfo = Join-Path $PSScriptRoot "version_info.txt"
-$distExe = Join-Path $projectRoot "dist\$appName.exe"
+$installedDistDir = Join-Path $projectRoot "dist\$appName"
+$installedDistExe = Join-Path $installedDistDir "$appName.exe"
+$portableBuildName = "$appName Portable"
+$distPortableExe = Join-Path $projectRoot "dist\$portableBuildName.exe"
+$payloadZip = Join-Path $projectRoot "build\InstalledPayload.zip"
 $distributionFolderName = ([string][char]0xBC30) + ([string][char]0xD3EC)
 $releaseRoot = Join-Path (Split-Path $projectRoot -Parent) $distributionFolderName
 $releaseDir = Join-Path $releaseRoot "$appName $appVersion"
@@ -27,7 +31,7 @@ try {
     & $python -m PyInstaller `
         --noconfirm `
         --clean `
-        --onefile `
+        --onedir `
         --windowed `
         --name $appName `
         --icon $icon `
@@ -36,15 +40,38 @@ try {
         --collect-all tree_sitter_c `
         --collect-all clang `
         app.py
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
+    if ($LASTEXITCODE -ne 0) { throw "Installed application build failed." }
+
+    & $python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --windowed `
+        --name $portableBuildName `
+        --icon $icon `
+        --version-file $versionInfo `
+        --add-data "$icon;assets" `
+        --collect-all tree_sitter_c `
+        --collect-all clang `
+        app.py
+    if ($LASTEXITCODE -ne 0) { throw "Portable application build failed." }
 } finally {
     Pop-Location
 }
 
-$smoke = Start-Process -FilePath $distExe -ArgumentList "--smoke-test" -Wait -PassThru
-if ($smoke.ExitCode -ne 0) {
-    throw "Packaged application smoke test failed with exit code $($smoke.ExitCode)."
+$installedSmoke = Start-Process -FilePath $installedDistExe -ArgumentList "--smoke-test" -Wait -PassThru
+if ($installedSmoke.ExitCode -ne 0) {
+    throw "Installed application smoke test failed with exit code $($installedSmoke.ExitCode)."
 }
+$portableSmoke = Start-Process -FilePath $distPortableExe -ArgumentList "--smoke-test" -Wait -PassThru
+if ($portableSmoke.ExitCode -ne 0) {
+    throw "Portable application smoke test failed with exit code $($portableSmoke.ExitCode)."
+}
+
+if (Test-Path -LiteralPath $payloadZip) {
+    Remove-Item -LiteralPath $payloadZip -Force
+}
+Compress-Archive -Path (Join-Path $installedDistDir "*") -DestinationPath $payloadZip -CompressionLevel Optimal
 
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 if (Test-Path -LiteralPath $releaseDir) {
@@ -59,7 +86,7 @@ if (Test-Path -LiteralPath $releaseDir) {
     }
 }
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-Copy-Item -LiteralPath $distExe -Destination $portableExe -Force
+Copy-Item -LiteralPath $distPortableExe -Destination $portableExe -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "RELEASE_README.txt") -Destination (Join-Path $releaseDir "README.txt") -Force
 
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -75,16 +102,19 @@ $uninstallScript = Join-Path $PSScriptRoot "uninstall.ps1"
     /optimize+ `
     "/win32icon:$icon" `
     "/out:$setupExe" `
-    "/resource:$distExe,Payload.exe" `
+    "/resource:$payloadZip,Payload.zip" `
     "/resource:$uninstallScript,UninstallScript" `
     /reference:System.dll `
     /reference:System.Core.dll `
     /reference:System.Drawing.dll `
+    /reference:System.IO.Compression.dll `
+    /reference:System.IO.Compression.FileSystem.dll `
     /reference:System.Windows.Forms.dll `
     $installerSource
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupExe)) {
     throw "Installer compilation failed. Exit code: $LASTEXITCODE"
 }
+Remove-Item -LiteralPath $payloadZip -Force
 
 $portableHash = (Get-FileHash -LiteralPath $portableExe -Algorithm SHA256).Hash
 $setupHash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash

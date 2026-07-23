@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -12,8 +13,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Installer for C Call Hierarchy Explorer")]
 [assembly: AssemblyCompany("Call Hierarchy Tools")]
 [assembly: AssemblyProduct("C Call Hierarchy Explorer")]
-[assembly: AssemblyVersion("1.1.11.0")]
-[assembly: AssemblyFileVersion("1.1.11.0")]
+[assembly: AssemblyVersion("1.1.12.0")]
+[assembly: AssemblyFileVersion("1.1.12.0")]
 
 namespace CCallHierarchyExplorerSetup
 {
@@ -54,7 +55,7 @@ namespace CCallHierarchyExplorerSetup
     internal sealed class InstallerForm : Form
     {
         private const string AppName = "C Call Hierarchy Explorer";
-        private const string AppVersion = "1.1.11";
+        private const string AppVersion = "1.1.12";
         private const string AppId = "CCallHierarchyExplorer";
         private const string ExeName = "C Call Hierarchy Explorer.exe";
 
@@ -161,10 +162,23 @@ namespace CCallHierarchyExplorerSetup
         private void InstallApplication()
         {
             string installDir = GetInstallDir();
+            if (Directory.Exists(installDir))
+            {
+                Directory.Delete(installDir, true);
+            }
             Directory.CreateDirectory(installDir);
             status.Text = "프로그램 파일을 설치하고 있습니다...";
             Application.DoEvents();
-            ExtractResource("Payload.exe", GetInstalledExe(), true);
+            string payloadArchive = Path.Combine(Path.GetTempPath(), AppId + "-" + Guid.NewGuid().ToString("N") + ".zip");
+            try
+            {
+                ExtractResource("Payload.zip", payloadArchive, true);
+                ZipFile.ExtractToDirectory(payloadArchive, installDir);
+            }
+            finally
+            {
+                if (File.Exists(payloadArchive)) File.Delete(payloadArchive);
+            }
             progress.Value = 82;
             ExtractResource("UninstallScript", Path.Combine(installDir, "uninstall.ps1"), false);
             progress.Value = 88;

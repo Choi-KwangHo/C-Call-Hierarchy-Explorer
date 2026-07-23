@@ -28,13 +28,38 @@ from update_service import RELEASE_PAGE, ReleaseInfo, UpdateError, download_asse
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.11"
+APP_VERSION = "1.1.12"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 
 def resource_path(relative: str) -> str:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return str(base / relative)
+
+
+def sanitize_recent_folders(values: list[str]) -> list[str]:
+    """Remove test/smoke-test folders and duplicate entries from persisted history."""
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not str(value).strip():
+            continue
+        try:
+            resolved = Path(value).resolve()
+        except (OSError, RuntimeError):
+            continue
+        try:
+            resolved.relative_to(temporary_root)
+            continue
+        except ValueError:
+            pass
+        key = str(resolved).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(str(resolved))
+    return cleaned[:10]
 
 
 def unique_output_path(path: str | Path) -> Path:
@@ -261,7 +286,10 @@ class MainWindow(QMainWindow):
         self.cache_store = ProjectCacheStore()
         self.settings = QSettings("CCodeTree", "CFunctionCallTree")
         stored = self.settings.value("recentFolders", [])
-        self.recent_folders = [stored] if isinstance(stored, str) and stored else list(stored or [])
+        stored_folders = [stored] if isinstance(stored, str) and stored else list(stored or [])
+        self.recent_folders = sanitize_recent_folders([str(value) for value in stored_folders])
+        if self.recent_folders != stored_folders:
+            self.settings.setValue("recentFolders", self.recent_folders)
         self._build_ui()
         self._restoring_state = False
 
@@ -1314,6 +1342,9 @@ def main() -> int:
     app.setStyle("Fusion")
     if "--smoke-test" in sys.argv:
         with tempfile.TemporaryDirectory() as temporary:
+            settings_directory = Path(temporary) / "settings"
+            QSettings.setDefaultFormat(QSettings.IniFormat)
+            QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(settings_directory))
             source = Path(temporary) / "main.c"
             source.write_text("void child(void){}\nint main(void){child();}\n", encoding="utf-8")
             result = AnalyzerSession().initial_scan(temporary)

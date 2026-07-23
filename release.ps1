@@ -1,13 +1,22 @@
-﻿param(
-    [Parameter(Mandatory = $true)]
-    [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version
+param(
+    [string]$Version = "",
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
-$tag = "v$Version"
-$project = Join-Path $PSScriptRoot "Python\프로그램"
+$pythonRoot = Join-Path $PSScriptRoot "Python"
+$projectCandidates = @(
+    Get-ChildItem -LiteralPath $pythonRoot -Directory |
+        Where-Object {
+            (Test-Path -LiteralPath (Join-Path $_.FullName "app.py")) -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName "packaging\build_release.ps1"))
+        }
+)
+if ($projectCandidates.Count -ne 1) {
+    throw "Unable to locate one Python application directory containing app.py."
+}
+$project = $projectCandidates[0].FullName
 $python = Join-Path $project ".venv\Scripts\python.exe"
 
 function Set-ReleaseVersion {
@@ -24,20 +33,19 @@ function Set-ReleaseVersion {
     }
 
     $versionFiles = @(
-        "Python\프로그램\app.py",
-        "Python\프로그램\README.md",
-        "Python\프로그램\packaging\build_release.ps1",
-        "Python\프로그램\packaging\Installer.cs",
-        "Python\프로그램\packaging\RELEASE_README.txt",
-        "Python\프로그램\packaging\version_info.txt",
-        "Python\프로그램\tests\test_app_integration.py"
+        (Join-Path $project "app.py"),
+        (Join-Path $project "README.md"),
+        (Join-Path $project "packaging\build_release.ps1"),
+        (Join-Path $project "packaging\Installer.cs"),
+        (Join-Path $project "packaging\RELEASE_README.txt"),
+        (Join-Path $project "packaging\version_info.txt"),
+        (Join-Path $project "tests\test_app_integration.py")
     )
 
-    foreach ($relativePath in $versionFiles) {
-        $path = Join-Path $PSScriptRoot $relativePath
+    foreach ($path in $versionFiles) {
         $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
         if (-not $content.Contains($CurrentVersion)) {
-            throw "Version $CurrentVersion was not found in $relativePath. Release files may be inconsistent."
+            throw "Version $CurrentVersion was not found in $path. Release files may be inconsistent."
         }
         $updated = $content.Replace($CurrentVersion, $NewVersion)
         Set-Content -LiteralPath $path -Value $updated -Encoding UTF8 -NoNewline
@@ -51,10 +59,16 @@ if ($LASTEXITCODE -ne 0) { throw "This is not a Git repository." }
 git remote get-url origin | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "The origin remote is not configured." }
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "Python virtual environment is missing. Run Python\program\install.bat first."
+    $installScript = Join-Path $project "install.ps1"
+    if (-not (Test-Path -LiteralPath $installScript)) {
+        throw "Python virtual environment and install.ps1 are missing."
+    }
+    Write-Host "Python virtual environment is missing. Creating it now..."
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installScript
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $python)) {
+        throw "Python virtual environment setup failed."
+    }
 }
-$existingTag = git tag --list $tag
-if ($existingTag) { throw "Tag $tag already exists." }
 
 $appPath = Join-Path $project "app.py"
 $appText = Get-Content -Raw -Encoding UTF8 -LiteralPath $appPath
@@ -62,7 +76,22 @@ $versionMatch = [regex]::Match($appText, 'APP_VERSION\s*=\s*"(?<version>\d+\.\d+
 if (-not $versionMatch.Success) {
     throw "APP_VERSION was not found in app.py."
 }
-Set-ReleaseVersion -CurrentVersion $versionMatch.Groups["version"].Value -NewVersion $Version
+$currentVersion = $versionMatch.Groups["version"].Value
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = $currentVersion
+    Write-Host "Using app.py release version $Version"
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Release version must use the major.minor.patch format."
+}
+$tag = "v$Version"
+$existingTag = git tag --list $tag
+if ($existingTag) { throw "Tag $tag already exists." }
+Set-ReleaseVersion -CurrentVersion $currentVersion -NewVersion $Version
+if ($CheckOnly) {
+    Write-Host "Release prerequisites are ready for $tag"
+    exit 0
+}
 
 Write-Host "[1/6] Running tests"
 Push-Location $project

@@ -15,7 +15,7 @@ from PySide6.QtGui import QDesktopServices, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog  # noqa: E402
 
-from app import APP_VERSION, MainWindow, compact_file_path, unique_output_path  # noqa: E402
+from app import APP_VERSION, MainWindow, compact_file_path, sanitize_recent_folders, unique_output_path  # noqa: E402
 from project_cache import ProjectCacheStore  # noqa: E402
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions  # noqa: E402
 
@@ -23,7 +23,15 @@ from settings_dialog import ProjectSettingsDialog, normalize_exclusions  # noqa:
 class AppIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.settings_temporary = tempfile.TemporaryDirectory()
+        QSettings.setDefaultFormat(QSettings.IniFormat)
+        QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, cls.settings_temporary.name)
         cls.app = QApplication.instance() or QApplication([])
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.app.processEvents()
+        cls.settings_temporary.cleanup()
 
     def _wait(self, window: MainWindow, timeout: float = 10.0) -> None:
         deadline = time.monotonic() + timeout
@@ -36,9 +44,6 @@ class AppIntegrationTests(unittest.TestCase):
     def test_manual_update_auto_data_path_and_excel_button(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            settings_dir = root / "settings"
-            QSettings.setDefaultFormat(QSettings.IniFormat)
-            QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(settings_dir))
             source = root / "main.c"
             source.write_text("void Watchdog_Task(void){}\nint main(void){Watchdog_Task();}\n", encoding="utf-8")
             window = MainWindow()
@@ -112,6 +117,15 @@ class AppIntegrationTests(unittest.TestCase):
             (root / "tree_1.xlsx").touch()
             self.assertEqual(unique_output_path(original).name, "tree_2.xlsx")
 
+    def test_recent_folders_remove_test_temporary_paths_and_duplicates(self) -> None:
+        legitimate = Path.home() / "Documents" / "C-Call-Hierarchy-Recent-Test"
+        with tempfile.TemporaryDirectory() as temporary:
+            nested_temporary = Path(temporary) / "project"
+            cleaned = sanitize_recent_folders(
+                [str(nested_temporary), str(legitimate), str(legitimate)]
+            )
+        self.assertEqual(cleaned, [str(legitimate.resolve())])
+
     def test_file_path_compacts_with_panel_width(self) -> None:
         window = MainWindow()
         metrics = window.file_tree.fontMetrics()
@@ -131,7 +145,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.1.11")
+        self.assertEqual(APP_VERSION, "1.1.12")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
