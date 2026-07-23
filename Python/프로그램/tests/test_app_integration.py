@@ -173,8 +173,8 @@ class AppIntegrationTests(unittest.TestCase):
     def test_startup_cleanup_removes_only_inactive_version_folders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "CCallHierarchyExplorer"
-            current = root / "app-1.1.18-current"
-            old = root / "app-1.1.18-old"
+            current = root / "app-1.1.19-current"
+            old = root / "app-1.1.19-old"
             unrelated = root / "user-data"
             for directory in (current, old, unrelated):
                 directory.mkdir(parents=True)
@@ -205,7 +205,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.1.18")
+        self.assertEqual(APP_VERSION, "1.1.19")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
@@ -213,6 +213,7 @@ class AppIntegrationTests(unittest.TestCase):
             root = Path(temporary)
             (root / "Parent" / "Child").mkdir(parents=True)
             (root / "Other").mkdir()
+            (root / "Parent" / "keep.c").write_text("void keep(void){}\n", encoding="utf-8")
             dialog = ProjectSettingsDialog(
                 str(root),
                 [r"Parent\Child", "Parent", "Other"],
@@ -233,10 +234,22 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertEqual(dialog.excluded_folders(), [])
             children["Parent"].setExpanded(True)
             self.assertEqual(children["Parent"].child(0).text(0), "Child")
-            children["Parent"].child(0).setCheckState(0, Qt.Unchecked)
+            parent_children = {
+                children["Parent"].child(index).text(0): children["Parent"].child(index)
+                for index in range(children["Parent"].childCount())
+            }
+            self.assertIn("keep.c", parent_children)
+            parent_children["Child"].setCheckState(0, Qt.Unchecked)
             self.assertEqual(dialog.excluded_folders(), [r"Parent\Child"])
+            parent_children["keep.c"].setCheckState(0, Qt.Unchecked)
+            self.assertEqual(
+                dialog.excluded_folders(),
+                [r"Parent\Child", r"Parent\keep.c"],
+            )
             dialog.external_check.setChecked(False)
             self.assertFalse(dialog.show_external_functions())
+            dialog.macro_check.setChecked(False)
+            self.assertFalse(dialog.exclude_macro_functions())
             self.assertEqual(
                 dialog.external_check.palette().color(QPalette.Active, QPalette.WindowText).name(),
                 "#e7e7e7",

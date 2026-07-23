@@ -47,6 +47,9 @@ class ExcelTests(unittest.TestCase):
                 sheet2 = ET.fromstring(archive.read("xl/worksheets/sheet2.xml"))
                 strings = [node.text or "" for node in sheet2.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")]
                 self.assertLessEqual(max(map(len, strings)), 32_000)
+                self.assertIn("함수 행 수", strings)
+                function_sheet = archive.read("xl/worksheets/sheet2.xml").decode("utf-8")
+                self.assertIn('<c r="E2" s="0"><v>1</v></c>', function_sheet)
 
 
 if __name__ == "__main__":

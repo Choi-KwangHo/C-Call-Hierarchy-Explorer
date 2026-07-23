@@ -174,9 +174,14 @@ $checksumName = "SHA256SUMS.txt"
 $initialWaitSeconds = 90
 Write-Host "GitHub Actions에서 $tag 빌드 자산을 생성하고 있습니다."
 Write-Host -NoNewline "["
-for ($elapsed = 0; $elapsed -lt $initialWaitSeconds; $elapsed += 10) {
-    Start-Sleep -Seconds 10
-    Write-Host -NoNewline "o"
+for ($elapsed = 1; $elapsed -le $initialWaitSeconds; $elapsed++) {
+    Write-Host -NoNewline ([char]0x258C)
+    Start-Sleep -Milliseconds 500
+    Write-Host -NoNewline "`b `b"
+    Start-Sleep -Milliseconds 500
+    if (($elapsed % 10) -eq 0) {
+        Write-Host -NoNewline "o"
+    }
 }
 $buildDeadline = (Get-Date).AddMinutes(10)
 $buildReady = $false
@@ -216,7 +221,12 @@ while ((Get-Date) -lt $buildDeadline) {
     } catch {
         # The tag appears before GitHub Actions finishes uploading release assets.
     }
-    Start-Sleep -Seconds 10
+    for ($waitSecond = 1; $waitSecond -le 10; $waitSecond++) {
+        Write-Host -NoNewline ([char]0x258C)
+        Start-Sleep -Milliseconds 500
+        Write-Host -NoNewline "`b `b"
+        Start-Sleep -Milliseconds 500
+    }
     Write-Host -NoNewline "o"
 }
 if (-not $buildReady) {

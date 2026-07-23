@@ -140,6 +140,78 @@ class AnalyzerTests(unittest.TestCase):
             self.assertEqual((changed, deleted), (0, 1))
             self.assertNotIn("keep_fn", result.by_name)
 
+    def test_individual_file_exclusion_updates_incrementally(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "Source"
+            source.mkdir()
+            first = source / "first.c"
+            second = source / "second.c"
+            first.write_text("void first_fn(void){}\n", encoding="utf-8")
+            second.write_text("void second_fn(void){}\n", encoding="utf-8")
+
+            session = AnalyzerSession()
+            result = session.initial_scan(str(root), excluded_directories=[r"Source\first.c"])
+            self.assertNotIn("first_fn", result.by_name)
+            self.assertIn("second_fn", result.by_name)
+
+            session.set_excluded_directories([])
+            result, changed, deleted = session.check_updates()
+            self.assertEqual((changed, deleted), (1, 0))
+            self.assertIn("first_fn", result.by_name)
+
+            session.set_excluded_directories([r"Source\second.c"])
+            result, changed, deleted = session.check_updates()
+            self.assertEqual((changed, deleted), (0, 1))
+            self.assertNotIn("second_fn", result.by_name)
+
+    def test_macro_calls_can_be_excluded_or_included(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "main.c").write_text(
+                "#define LIMIT(value) ((value) + 1)\n"
+                "int main(void){ return LIMIT(1); }\n",
+                encoding="utf-8",
+            )
+            session = AnalyzerSession()
+            result = session.initial_scan(str(root), exclude_macro_functions=True)
+            self.assertEqual(result.by_name["main"][0].calls, [])
+
+            session.set_exclude_macro_functions(False)
+            result, changed, deleted = session.check_updates()
+            self.assertEqual((changed, deleted), (0, 0))
+            self.assertEqual([call.name for call in result.by_name["main"][0].calls], ["LIMIT"])
+
+    def test_large_file_macro_and_duplicate_boundaries_are_not_functions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "large.c"
+            source.write_text(
+                "/*" + ("padding" * 10_000) + "*/\n"
+                "#if FEATURE_A\n"
+                "#define INIT_NAMBUF(fs) { int scratch = 0; }\n"
+                "#endif\n"
+                "/* Initialize allocation state. */\n"
+                "static int init_alloc_info(void)\n"
+                "{\n"
+                "    return 1;\n"
+                "}\n"
+                "#if FEATURE_A\n"
+                "int conditional_fn(void){ return 1; }\n"
+                "#else\n"
+                "int conditional_fn(void){ return 2; }\n"
+                "#endif\n",
+                encoding="utf-8",
+            )
+            result = AnalyzerSession().initial_scan(str(root))
+            self.assertNotIn("INIT_NAMBUF", result.by_name)
+            self.assertEqual(len(result.by_name["conditional_fn"]), 1)
+            function = result.by_name["init_alloc_info"][0]
+            self.assertEqual(function.declaration, "static int init_alloc_info(void)")
+            self.assertNotIn("#if", function.declaration)
+            self.assertNotIn("Initialize allocation", function.declaration)
+            self.assertGreater(function.end_line, function.start_line)
+
 
 if __name__ == "__main__":
     unittest.main()

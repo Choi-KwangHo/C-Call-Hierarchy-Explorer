@@ -23,6 +23,9 @@ CONTROL_WORDS = {
 EXCLUDED_DIRS = {".git", ".svn", ".hg", "node_modules", "dist", "build", ".vs"}
 FUNCTION_RE = re.compile(r"([A-Za-z_]\w*)\s*\((?:[^;{}()]|\([^()]*\))*\)\s*\{")
 CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+FUNCTION_MACRO_RE = re.compile(
+    r"(?m)^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]*\("
+)
 C_LANGUAGE = Language(tree_sitter_c.language())
 FUNCTION_QUERY = Query(C_LANGUAGE, "(function_definition) @function")
 CALL_QUERY = Query(C_LANGUAGE, "(call_expression) @call")
@@ -207,6 +210,43 @@ def _previous_boundary(text: str, index: int) -> int:
     return 0
 
 
+def _linear_declaration_start(masked: str, name_index: int) -> int:
+    """Skip comments and preprocessor guards preceding a linear-parser definition."""
+    boundary = _previous_boundary(masked, name_index)
+    position = boundary
+    for line in masked[boundary:name_index].splitlines(keepends=True):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            position += len(line)
+            continue
+        break
+    return position
+
+
+def _is_function_macro_definition(masked: str, name_index: int) -> bool:
+    line_start = masked.rfind("\n", 0, name_index) + 1
+    prefix = masked[line_start:name_index]
+    return bool(re.match(r"^[ \t]*#[ \t]*define\b", prefix))
+
+
+def _deduplicate_functions(functions: list[FunctionDef]) -> list[FunctionDef]:
+    """C cannot overload functions; keep one definition per file/name boundary."""
+    unique: list[FunctionDef] = []
+    by_name: dict[str, FunctionDef] = {}
+    for function in sorted(functions, key=lambda item: item.start_index):
+        existing = by_name.get(function.name)
+        if existing is None:
+            by_name[function.name] = function
+            unique.append(function)
+            continue
+        seen_calls = {(call.name, call.line) for call in existing.calls}
+        existing.calls.extend(
+            call for call in function.calls
+            if (call.name, call.line) not in seen_calls
+        )
+    return unique
+
+
 def _compact(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
@@ -327,15 +367,22 @@ def _parse_large_file_linear(path: str, root: str, text: str, modified_ns: int, 
     masked = mask_non_code(text)
     starts = _line_starts(text)
     functions: list[FunctionDef] = []
+    covered_until = -1
     for match in FUNCTION_RE.finditer(masked):
         name = match.group(1)
-        if name in CONTROL_WORDS:
+        if (
+            name in CONTROL_WORDS
+            or match.start(1) <= covered_until
+            or _is_function_macro_definition(masked, match.start(1))
+        ):
             continue
         body_start = match.end() - 1
         body_end = _find_matching(masked, body_start, "{", "}")
         if body_end < 0:
             continue
-        declaration_start = _previous_boundary(masked, match.start(1))
+        declaration_start = _linear_declaration_start(masked, match.start(1))
+        if re.search(r"(?m)^[ \t]*#[ \t]*define\b", masked[declaration_start:body_start]):
+            continue
         open_parenthesis = masked.find("(", match.start(1) + len(name), body_start)
         close_parenthesis = _find_matching(masked, open_parenthesis, "(", ")") if open_parenthesis >= 0 else -1
         function = FunctionDef(
@@ -357,11 +404,12 @@ def _parse_large_file_linear(path: str, root: str, text: str, modified_ns: int, 
                 continue
             function.calls.append(CallRef(call_name, None, _line_number(starts, call_match.start(1))))
         functions.append(function)
+        covered_until = body_end
     return ParsedFile(
         path=path,
         relative_path=_relative(path, root),
         text=text,
-        functions=functions,
+        functions=_deduplicate_functions(functions),
         modified_ns=modified_ns,
         file_size=file_size,
     )
@@ -446,7 +494,7 @@ def parse_file(
         path=str(file_path),
         relative_path=_relative(str(file_path), root),
         text=text,
-        functions=functions,
+        functions=_deduplicate_functions(functions),
         modified_ns=stat_ns,
         file_size=stat_size,
     )
@@ -472,12 +520,36 @@ def _best_target(caller: FunctionDef, targets: list[FunctionDef]) -> FunctionDef
     return max(targets, key=lambda target: _target_affinity(caller.path, target.path))
 
 
-def link_analysis(files: Iterable[ParsedFile], root: str) -> AnalysisResult:
+def link_analysis(
+    files: Iterable[ParsedFile],
+    root: str,
+    exclude_macro_functions: bool = True,
+) -> AnalysisResult:
     parsed_files = sorted(files, key=lambda item: _norm(item.path))
     functions = [function for parsed in parsed_files for function in parsed.functions]
+    macro_names = {
+        match.group(1)
+        for parsed in parsed_files
+        for match in FUNCTION_MACRO_RE.finditer(parsed.text)
+    }
     by_id = {function.id: function for function in functions}
     by_name: dict[str, list[FunctionDef]] = {}
     raw_calls = {function.id: list(function.calls) for function in functions}
+    if not exclude_macro_functions and macro_names:
+        parsed_by_path = {_norm(parsed.path): parsed for parsed in parsed_files}
+        for function in functions:
+            parsed = parsed_by_path.get(_norm(function.path))
+            if parsed is None:
+                continue
+            source_lines = mask_non_code(parsed.text).splitlines()
+            body_lines = source_lines[max(0, function.start_line - 1):function.end_line]
+            known = {(call.name, call.line) for call in raw_calls[function.id]}
+            for offset, line in enumerate(body_lines, function.start_line):
+                for match in CALL_RE.finditer(line):
+                    name = match.group(1)
+                    if name in macro_names and (name, offset) not in known:
+                        raw_calls[function.id].append(CallRef(name=name, target_id=None, line=offset))
+                        known.add((name, offset))
     for function in functions:
         function.calls = []
         function.callers = set()
@@ -486,6 +558,8 @@ def link_analysis(files: Iterable[ParsedFile], root: str) -> AnalysisResult:
     for function in functions:
         for raw_call in raw_calls[function.id]:
             name = raw_call.name
+            if exclude_macro_functions and name in macro_names:
+                continue
             target = _best_target(function, by_name.get(name, []))
             if target:
                 function.calls.append(CallRef(name=name, target_id=target.id, line=raw_call.line))
@@ -908,6 +982,8 @@ class AnalyzerSession:
         self.result: AnalysisResult | None = None
         self.clang_resolver: ClangResolver | None = None
         self.excluded_directories: tuple[str, ...] = ()
+        self.exclude_macro_functions = True
+        self._analysis_options_dirty = False
         self._lock = threading.RLock()
 
     def restore(
@@ -916,6 +992,7 @@ class AnalyzerSession:
         cache: dict[str, ParsedFile],
         result: AnalysisResult,
         excluded_directories: Iterable[str] = (),
+        exclude_macro_functions: bool = True,
     ) -> None:
         """디스크 캐시를 즉시 사용할 수 있는 분석 세션으로 복원한다."""
         with self._lock:
@@ -923,11 +1000,31 @@ class AnalyzerSession:
             self.cache = cache
             self.result = result
             self.excluded_directories = tuple(excluded_directories)
+            self.exclude_macro_functions = bool(exclude_macro_functions)
+            self._analysis_options_dirty = False
             self.clang_resolver = ClangResolver(self.root)
 
     def set_excluded_directories(self, values: Iterable[str]) -> None:
         with self._lock:
             self.excluded_directories = tuple(values)
+
+    def set_exclude_macro_functions(self, enabled: bool) -> None:
+        with self._lock:
+            enabled = bool(enabled)
+            if enabled != self.exclude_macro_functions:
+                self.exclude_macro_functions = enabled
+                self._analysis_options_dirty = True
+
+    def relink(self) -> AnalysisResult:
+        with self._lock:
+            result = link_analysis(
+                self.cache.values(),
+                self.root,
+                exclude_macro_functions=self.exclude_macro_functions,
+            )
+            self.result = result
+            self._analysis_options_dirty = False
+            return result
 
     @staticmethod
     def scan_metadata(root: str, excluded_directories: Iterable[str] = ()) -> dict[str, tuple[str, int, int]]:
@@ -950,6 +1047,9 @@ class AnalyzerSession:
                 if Path(filename).suffix.lower() not in {".c", ".h"}:
                     continue
                 path = Path(directory) / filename
+                candidate = _norm(str(path)).rstrip("\\")
+                if any(candidate == blocked or candidate.startswith(blocked + "\\") for blocked in excluded):
+                    continue
                 try:
                     stat = path.stat()
                 except OSError:
@@ -963,8 +1063,11 @@ class AnalyzerSession:
         progress: Callable[[str, int, int, str], None] | None = None,
         cancel: threading.Event | None = None,
         excluded_directories: Iterable[str] = (),
+        exclude_macro_functions: bool = True,
     ) -> AnalysisResult:
         self.excluded_directories = tuple(excluded_directories)
+        self.exclude_macro_functions = bool(exclude_macro_functions)
+        self._analysis_options_dirty = False
         metadata = self.scan_metadata(root, self.excluded_directories)
         parsed: dict[str, ParsedFile] = {}
         items = sorted(metadata.items())
@@ -979,7 +1082,11 @@ class AnalyzerSession:
                 progress("C 파일 파싱", index, len(items), path)
         if progress:
             progress("호출 관계 연결", 0, len(parsed), "함수 정의를 연결하고 있습니다.")
-        result = link_analysis(parsed.values(), root)
+        result = link_analysis(
+            parsed.values(),
+            root,
+            exclude_macro_functions=self.exclude_macro_functions,
+        )
         resolver = ClangResolver(root)
         resolver.enrich(result, progress=progress)
         with self._lock:
@@ -1006,7 +1113,7 @@ class AnalyzerSession:
             )
         ]
         deleted = [key for key in old_cache if key not in metadata]
-        if not changed and not deleted:
+        if not changed and not deleted and not self._analysis_options_dirty:
             if self.result is None:
                 raise RuntimeError("분석 결과가 없습니다.")
             return self.result, 0, 0
@@ -1020,11 +1127,16 @@ class AnalyzerSession:
                 progress("변경 파일 파싱", index, len(changed), path)
         for key in deleted:
             updated.pop(key, None)
-        result = link_analysis(updated.values(), root)
+        result = link_analysis(
+            updated.values(),
+            root,
+            exclude_macro_functions=self.exclude_macro_functions,
+        )
         resolver = self.clang_resolver or ClangResolver(root)
         resolver.enrich(result, paths=(path for _, (path, _, _) in changed), progress=progress)
         with self._lock:
             self.cache = updated
             self.result = result
             self.clang_resolver = resolver
+            self._analysis_options_dirty = False
         return result, len(changed), len(deleted)

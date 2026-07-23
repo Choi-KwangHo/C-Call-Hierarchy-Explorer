@@ -45,6 +45,8 @@ def _column_name(number: int) -> str:
 
 def _cell(row: int, column: int, value: object, style: int = 0) -> str:
     reference = f"{_column_name(column)}{row}"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f'<c r="{reference}" s="{style}"><v>{value}</v></c>'
     return f'<c r="{reference}" s="{style}" t="inlineStr"><is><t>{_xml(value)}</t></is></c>'
 
 
@@ -169,12 +171,13 @@ def export_xlsx(
 
     function_rows: list[list[tuple[object, int]]] = [[
         ("함수", 1), ("파일", 1), ("시작 행", 1), ("종료 행", 1),
-        ("선언", 1), ("호출 수", 1), ("호출자 수", 1),
+        ("함수 행 수", 1), ("선언", 1), ("호출 수", 1), ("호출자 수", 1),
     ]]
     for function in sorted(result.functions, key=lambda item: (item.path.lower(), item.start_line)):
         function_rows.append([
             (function.name, 0), (function.path, 0), (function.start_line, 0),
-            (function.end_line, 0), (function.declaration, 0),
+            (function.end_line, 0), (function.end_line - function.start_line + 1, 0),
+            (function.declaration, 0),
             (len(function.calls), 0), (len(function.callers), 0),
         ])
         completed += 1
@@ -214,7 +217,7 @@ def export_xlsx(
     sheet1 = _sheet(call_rows, [28] * depth_count + [18, 32, 10], merges=call_merges)
     completed += 1
     report("호출 관계 시트 생성", True)
-    sheet2 = _sheet(function_rows, [28, 70, 12, 12, 80, 12, 12])
+    sheet2 = _sheet(function_rows, [28, 70, 12, 12, 14, 80, 12, 12])
     completed += 1
     report("함수 목록 시트 생성", True)
     try:

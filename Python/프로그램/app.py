@@ -32,7 +32,7 @@ from update_service import (
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.18"
+APP_VERSION = "1.1.19"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 
@@ -324,6 +324,7 @@ class MainWindow(QMainWindow):
         self._cache_generation = 0
         self._cache_saving = False
         self.show_external_functions = True
+        self.exclude_macro_functions = True
         self.cache_store = ProjectCacheStore()
         self.settings = QSettings("CCodeTree", "CFunctionCallTree")
         stored = self.settings.value("recentFolders", [])
@@ -551,34 +552,54 @@ class MainWindow(QMainWindow):
             visible,
         )
 
+    def _load_exclude_macro_functions(self, root: str) -> bool:
+        return self.settings.value(
+            f"{self._project_settings_group(root)}/excludeMacroFunctions",
+            True,
+            type=bool,
+        )
+
+    def _store_exclude_macro_functions(self, root: str, excluded: bool) -> None:
+        self.settings.setValue(
+            f"{self._project_settings_group(root)}/excludeMacroFunctions",
+            excluded,
+        )
+
     def _open_project_settings(self) -> None:
         if not self.result or not self.session.root:
             QMessageBox.information(self, "프로젝트 설정", "먼저 분석할 메인 폴더를 열어 주십시오.")
             return
         current = list(self.session.excluded_directories)
         current_external = self.show_external_functions
+        current_macro = self.exclude_macro_functions
         dialog = ProjectSettingsDialog(
             self.session.root,
             current,
             self,
             show_external_functions=current_external,
+            exclude_macro_functions=current_macro,
         )
         if dialog.exec() != QDialog.Accepted:
             return
         updated = dialog.excluded_folders()
         updated_external = dialog.show_external_functions()
+        updated_macro = dialog.exclude_macro_functions()
         folders_changed = [value.casefold() for value in updated] != [value.casefold() for value in current]
         external_changed = updated_external != current_external
-        if not folders_changed and not external_changed:
+        macro_changed = updated_macro != current_macro
+        if not folders_changed and not external_changed and not macro_changed:
             return
         self._store_excluded_folders(self.session.root, updated)
         self._store_show_external_functions(self.session.root, updated_external)
+        self._store_exclude_macro_functions(self.session.root, updated_macro)
         self.session.set_excluded_directories(updated)
+        self.session.set_exclude_macro_functions(updated_macro)
         self.show_external_functions = updated_external
+        self.exclude_macro_functions = updated_macro
         self._mark_cache_dirty()
-        if folders_changed:
+        if folders_changed or macro_changed:
             self.status_label.setText("분석 범위 설정 적용 중…")
-            self._check_updates(False, external_changed)
+            self._check_updates(False, True)
         else:
             self._rebuild_view()
 
@@ -599,6 +620,7 @@ class MainWindow(QMainWindow):
         self.toolbar.show()
         excluded_folders = self._load_excluded_folders(folder)
         show_external_functions = self._load_show_external_functions(folder)
+        exclude_macro_functions = self._load_exclude_macro_functions(folder)
 
         def task(progress):
             cached = self.cache_store.load(folder)
@@ -606,7 +628,16 @@ class MainWindow(QMainWindow):
                 result = cached["result"]
                 ui_state = cached.get("ui_state") if isinstance(cached.get("ui_state"), dict) else {}
                 cached_exclusions = normalize_exclusions([str(value) for value in ui_state.get("excluded_folders", [])])
-                self.session.restore(folder, cached["session_cache"], result, cached_exclusions)
+                cached_macro = ui_state.get("exclude_macro_functions")
+                self.session.restore(
+                    folder,
+                    cached["session_cache"],
+                    result,
+                    cached_exclusions,
+                    exclude_macro_functions=exclude_macro_functions,
+                )
+                if not isinstance(cached_macro, bool) or cached_macro != exclude_macro_functions:
+                    result = self.session.relink()
                 selected = ui_state.get("selected_main")
                 include_other = bool(ui_state.get("include_other", False))
                 view = build_call_view(
@@ -615,10 +646,21 @@ class MainWindow(QMainWindow):
                     include_other,
                     include_external_calls=show_external_functions,
                 )
-                return result, view, ui_state, True, excluded_folders, show_external_functions
-            result = self.session.initial_scan(folder, progress, excluded_directories=excluded_folders)
+                return (
+                    result, view, ui_state, True, excluded_folders,
+                    show_external_functions, exclude_macro_functions,
+                )
+            result = self.session.initial_scan(
+                folder,
+                progress,
+                excluded_directories=excluded_folders,
+                exclude_macro_functions=exclude_macro_functions,
+            )
             view = build_call_view(result, include_external_calls=show_external_functions)
-            return result, view, {}, False, excluded_folders, show_external_functions
+            return (
+                result, view, {}, False, excluded_folders,
+                show_external_functions, exclude_macro_functions,
+            )
 
         self._start_job(task, self._initial_ready, True, "저장된 프로젝트 상태 확인 중…")
 
@@ -713,9 +755,13 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self._check_updates(False))
 
     def _initial_ready(self, payload: object) -> None:
-        result, view, ui_state, from_cache, desired_exclusions, show_external_functions = payload
+        (
+            result, view, ui_state, from_cache, desired_exclusions,
+            show_external_functions, exclude_macro_functions,
+        ) = payload
         self._restoring_state = True
         self.show_external_functions = show_external_functions
+        self.exclude_macro_functions = exclude_macro_functions
         self._remember_folder(result.root)
         self.pages.setCurrentWidget(self.workspace_splitter)
         self.toolbar.show()
@@ -725,6 +771,7 @@ class MainWindow(QMainWindow):
         cached_exclusions = normalize_exclusions([str(value) for value in ui_state.get("excluded_folders", [])])
         exclusions_changed = [value.casefold() for value in cached_exclusions] != [value.casefold() for value in desired_exclusions]
         self.session.set_excluded_directories(desired_exclusions)
+        self.session.set_exclude_macro_functions(exclude_macro_functions)
         self._restoring_state = False
         if from_cache:
             self._cache_dirty = False
@@ -833,6 +880,7 @@ class MainWindow(QMainWindow):
             "selected_main": self._selected_main(),
             "include_other": self.other_roots_action.isChecked(),
             "show_external_functions": self.show_external_functions,
+            "exclude_macro_functions": self.exclude_macro_functions,
             "show_file_tree": self.file_action.isChecked(),
             "show_code_preview": self.source_action.isChecked(),
             "auto_check": self.auto_check.isChecked(),

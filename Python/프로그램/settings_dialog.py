@@ -26,6 +26,7 @@ BUILT_IN_EXCLUDED_DIRS = {".git", ".svn", ".hg", "node_modules", "dist", "build"
 PATH_ROLE = Qt.UserRole
 RELATIVE_ROLE = Qt.UserRole + 1
 LOADED_ROLE = Qt.UserRole + 2
+IS_DIRECTORY_ROLE = Qt.UserRole + 3
 
 
 class BrightCheckStyle(QProxyStyle):
@@ -65,7 +66,7 @@ def normalize_exclusions(values: list[str]) -> list[str]:
 
 
 class FolderSelectionTree(QTreeWidget):
-    """Lazy checkbox tree backed by a compact list of excluded directory roots."""
+    """Lazy checkbox tree for included/excluded C source folders and files."""
 
     def __init__(self, root: Path, excluded: list[str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -83,6 +84,7 @@ class FolderSelectionTree(QTreeWidget):
         self.root_item.setData(0, PATH_ROLE, str(root))
         self.root_item.setData(0, RELATIVE_ROLE, "")
         self.root_item.setData(0, LOADED_ROLE, False)
+        self.root_item.setData(0, IS_DIRECTORY_ROLE, True)
         self.root_item.setFlags(self.root_item.flags() | Qt.ItemIsUserCheckable)
         self.root_item.setToolTip(0, str(root))
         self._add_placeholder_if_needed(self.root_item, root)
@@ -114,18 +116,24 @@ class FolderSelectionTree(QTreeWidget):
         return [item.child(index) for index in range(item.childCount()) if item.child(index).data(0, PATH_ROLE)]
 
     @staticmethod
-    def _directory_children(path: Path) -> list[Path]:
+    def _scope_children(path: Path) -> list[Path]:
         try:
             children = [
                 child for child in path.iterdir()
-                if child.is_dir() and child.name.casefold() not in BUILT_IN_EXCLUDED_DIRS
+                if (
+                    child.is_dir()
+                    and child.name.casefold() not in BUILT_IN_EXCLUDED_DIRS
+                ) or (
+                    child.is_file()
+                    and child.suffix.casefold() in {".c", ".h"}
+                )
             ]
         except OSError:
             return []
-        return sorted(children, key=lambda child: child.name.casefold())
+        return sorted(children, key=lambda child: (not child.is_dir(), child.name.casefold()))
 
     def _add_placeholder_if_needed(self, item: QTreeWidgetItem, path: Path) -> None:
-        if self._directory_children(path):
+        if path.is_dir() and self._scope_children(path):
             QTreeWidgetItem(item, [""])
 
     def _ensure_loaded(self, item: QTreeWidgetItem) -> None:
@@ -134,11 +142,14 @@ class FolderSelectionTree(QTreeWidget):
         path_text = item.data(0, PATH_ROLE)
         if not path_text:
             return
+        if not bool(item.data(0, IS_DIRECTORY_ROLE)):
+            item.setData(0, LOADED_ROLE, True)
+            return
         self._updating = True
         try:
             item.takeChildren()
             path = Path(path_text)
-            for child_path in self._directory_children(path):
+            for child_path in self._scope_children(path):
                 try:
                     relative = str(child_path.relative_to(self.root_path)).replace("/", "\\")
                 except ValueError:
@@ -146,7 +157,8 @@ class FolderSelectionTree(QTreeWidget):
                 child = QTreeWidgetItem(item, [child_path.name, "포함"])
                 child.setData(0, PATH_ROLE, str(child_path))
                 child.setData(0, RELATIVE_ROLE, relative)
-                child.setData(0, LOADED_ROLE, False)
+                child.setData(0, IS_DIRECTORY_ROLE, child_path.is_dir())
+                child.setData(0, LOADED_ROLE, not child_path.is_dir())
                 child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
                 child.setToolTip(0, str(child_path))
                 self._add_placeholder_if_needed(child, child_path)
@@ -226,7 +238,7 @@ class FolderSelectionTree(QTreeWidget):
             current = self.root_path.joinpath(*ancestor_parts)
             for depth in range(len(ancestor_parts), len(target_parts)):
                 wanted = target_parts[depth]
-                for sibling in self._directory_children(current):
+                for sibling in self._scope_children(current):
                     if sibling.name.casefold() != wanted.casefold():
                         sibling_rel = str(sibling.relative_to(self.root_path)).replace("/", "\\")
                         self._excluded.append(sibling_rel)
@@ -241,6 +253,7 @@ class ProjectSettingsDialog(QDialog):
         excluded_folders: list[str],
         parent: QWidget | None = None,
         show_external_functions: bool = True,
+        exclude_macro_functions: bool = True,
     ) -> None:
         super().__init__(parent)
         self.root = Path(root).resolve()
@@ -283,7 +296,7 @@ class ProjectSettingsDialog(QDialog):
         outer.setContentsMargins(18, 16, 18, 16)
         outer.setSpacing(12)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("설정 검색 (예: 분석 범위, 외부 함수)")
+        self.search.setPlaceholderText("설정 검색 (예: 분석 범위, 외부 함수, 매크로)")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter_settings)
         # Settings search is an instant filter. Enter must never activate an
@@ -311,11 +324,11 @@ class ProjectSettingsDialog(QDialog):
         self.scope_card.setObjectName("settingCard")
         card_layout = QVBoxLayout(self.scope_card)
         card_layout.setContentsMargins(20, 18, 20, 18)
-        setting_title = QLabel("C 분석: 포함할 하위 폴더")
+        setting_title = QLabel("C 분석: 포함할 하위 폴더 및 파일")
         setting_title.setObjectName("settingTitle")
         description = QLabel(
-            "체크한 폴더의 .c/.h 파일만 함수 목록, 호출 트리, 파일/함수 보기, CODE 미리보기 및 자동 감시에 포함합니다.\n"
-            "체크를 해제하면 해당 폴더와 모든 하위 폴더가 분석에서 제외됩니다. 설정은 프로젝트별로 저장됩니다."
+            "체크한 폴더와 개별 .c/.h 파일만 함수 목록, 호출 트리, 파일/함수 보기, CODE 미리보기 및 자동 감시에 포함합니다.\n"
+            "폴더 체크를 해제하면 그 아래 전체가 제외되며, 폴더를 펼쳐 특정 파일만 포함하거나 제외할 수 있습니다."
         )
         description.setObjectName("description")
         description.setWordWrap(True)
@@ -348,6 +361,18 @@ class ProjectSettingsDialog(QDialog):
             "현재 분석 범위에서 정의를 찾지 못한 호출을 함수 호출 트리와 CODE 함수 구분에 표시합니다."
         )
         card_layout.addWidget(self.external_check)
+        self.macro_check = QCheckBox("함수형 매크로 호출 제외")
+        self.macro_check.setStyle(self._external_check_style)
+        macro_palette = self.macro_check.palette()
+        macro_palette.setColor(QPalette.Active, QPalette.WindowText, QColor("#E7E7E7"))
+        macro_palette.setColor(QPalette.Inactive, QPalette.WindowText, QColor("#E7E7E7"))
+        macro_palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#858585"))
+        self.macro_check.setPalette(macro_palette)
+        self.macro_check.setChecked(exclude_macro_functions)
+        self.macro_check.setToolTip(
+            "#define NAME(...) 형태로 정의된 함수형 매크로 호출을 호출 트리와 호출 수에서 제외합니다."
+        )
+        card_layout.addWidget(self.macro_check)
         controls = QHBoxLayout()
         include_all = QPushButton("모두 선택")
         include_all.setObjectName("primary")
@@ -415,9 +440,15 @@ class ProjectSettingsDialog(QDialog):
     def show_external_functions(self) -> bool:
         return self.external_check.isChecked()
 
+    def exclude_macro_functions(self) -> bool:
+        return self.macro_check.isChecked()
+
     def _filter_settings(self, text: str) -> None:
         query = text.strip().casefold()
-        keywords = "프로젝트 분석 범위 포함 제외 하위 폴더 c h 소스 함수 트리 외부 미확인 함수 표시 자동 감시 화면"
+        keywords = (
+            "프로젝트 분석 범위 포함 제외 하위 폴더 파일 c h 소스 함수 트리 "
+            "외부 미확인 함수 표시 매크로 메크로 define 자동 감시 화면"
+        )
         terms = [term for term in query.split() if term]
         matched = not terms or all(term in keywords.casefold() for term in terms)
         self.scope_card.setVisible(matched)
