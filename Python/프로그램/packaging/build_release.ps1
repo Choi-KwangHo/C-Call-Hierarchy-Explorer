@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "C Call Hierarchy Explorer"
-$appVersion = "1.1.14"
+$appVersion = "1.1.15"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -125,8 +125,10 @@ try {
     if ($installerSmoke.ExitCode -ne 0) {
         throw "Installer transaction test failed with exit code $($installerSmoke.ExitCode)."
     }
-    $installedTestExe = Join-Path $installerTestDir "$appName.exe"
-    $installedTestDll = Join-Path $installerTestDir "_internal\python312.dll"
+    $installedTestExe = Get-ChildItem -LiteralPath $installerTestDir -Filter "$appName.exe" -Recurse |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    $installedTestDll = Join-Path (Split-Path $installedTestExe -Parent) "_internal\python312.dll"
     if (-not (Test-Path -LiteralPath $installedTestExe) -or -not (Test-Path -LiteralPath $installedTestDll)) {
         throw "Installer transaction test did not produce the application and Python DLL."
     }
@@ -143,11 +145,15 @@ try {
     )
     try {
         $lockedUpgrade = Start-Process -FilePath $setupExe -ArgumentList "/S" -Wait -PassThru
-        if ($lockedUpgrade.ExitCode -eq 0) {
-            throw "Installer lock test unexpectedly replaced a running application."
+        if ($lockedUpgrade.ExitCode -ne 0) {
+            throw "Installer lock-resistant upgrade failed with exit code $($lockedUpgrade.ExitCode)."
         }
         if (-not (Test-Path -LiteralPath $installedTestExe) -or -not (Test-Path -LiteralPath $installedTestDll)) {
-            throw "Installer lock failure did not preserve the previous application."
+            throw "Installer lock-resistant upgrade did not preserve the running application."
+        }
+        $installedCopies = @(Get-ChildItem -LiteralPath $installerTestDir -Filter "$appName.exe" -Recurse)
+        if ($installedCopies.Count -lt 2) {
+            throw "Installer lock-resistant upgrade did not create a separate version directory."
         }
     } finally {
         $lockedExecutable.Dispose()
@@ -156,6 +162,13 @@ try {
     $retryUpgrade = Start-Process -FilePath $setupExe -ArgumentList "/S" -Wait -PassThru
     if ($retryUpgrade.ExitCode -ne 0) {
         throw "Installer retry test failed with exit code $($retryUpgrade.ExitCode)."
+    }
+    $installedTestExe = Get-ChildItem -LiteralPath $installerTestDir -Filter "$appName.exe" -Recurse |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    $remainingCopies = @(Get-ChildItem -LiteralPath $installerTestDir -Filter "$appName.exe" -Recurse)
+    if ($remainingCopies.Count -ne 1) {
+        throw "Installer cleanup test left $($remainingCopies.Count) application versions instead of one."
     }
     $retrySmoke = Start-Process -FilePath $installedTestExe -ArgumentList "--smoke-test" -Wait -PassThru
     if ($retrySmoke.ExitCode -ne 0) {

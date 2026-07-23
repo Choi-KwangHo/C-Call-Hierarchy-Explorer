@@ -4,6 +4,7 @@ import sys
 import traceback
 import re
 import html
+import shutil
 import tempfile
 import time
 from datetime import datetime
@@ -31,8 +32,44 @@ from update_service import (
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.14"
+APP_VERSION = "1.1.15"
 APP_PUBLISHER = "Call Hierarchy Tools"
+
+
+def cleanup_previous_installations(executable: str | Path | None = None) -> list[Path]:
+    """Remove inactive version folders after the new application has started."""
+    current_executable = Path(executable or sys.executable).resolve()
+    current_directory = current_executable.parent
+    install_root = current_directory.parent
+    if (
+        not current_directory.name.startswith("app-")
+        or install_root.name.casefold() != "ccallhierarchyexplorer"
+    ):
+        return []
+
+    removed: list[Path] = []
+    for directory in install_root.glob("app-*"):
+        try:
+            if not directory.is_dir() or directory.resolve() == current_directory:
+                continue
+            shutil.rmtree(directory)
+            removed.append(directory)
+        except OSError:
+            # A virus scanner or a retiring old process may still hold the folder.
+            # The next application start or update retries it.
+            continue
+
+    for legacy_path in (install_root / "_internal", install_root / "C Call Hierarchy Explorer.exe"):
+        try:
+            if legacy_path.is_dir():
+                shutil.rmtree(legacy_path)
+                removed.append(legacy_path)
+            elif legacy_path.is_file():
+                legacy_path.unlink()
+                removed.append(legacy_path)
+        except OSError:
+            continue
+    return removed
 
 
 def resource_path(relative: str) -> str:
@@ -1409,6 +1446,7 @@ def main() -> int:
     app.setOrganizationName(APP_PUBLISHER)
     app.setWindowIcon(QIcon(resource_path("assets/CallHierarchyExplorer.ico")))
     app.setStyle("Fusion")
+    cleanup_previous_installations()
     if "--smoke-test" in sys.argv:
         with tempfile.TemporaryDirectory() as temporary:
             settings_directory = Path(temporary) / "settings"

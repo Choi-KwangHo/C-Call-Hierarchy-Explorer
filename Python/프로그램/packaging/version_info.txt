@@ -5,11 +5,11 @@
       StringTable('040904B0', [
         StringStruct('CompanyName', 'Call Hierarchy Tools'),
         StringStruct('FileDescription', 'C Call Hierarchy Explorer'),
-        StringStruct('FileVersion', '1.1.14'),
+        StringStruct('FileVersion', '1.1.15'),
         StringStruct('InternalName', 'CCallHierarchyExplorer'),
         StringStruct('OriginalFilename', 'C Call Hierarchy Explorer.exe'),
         StringStruct('ProductName', 'C Call Hierarchy Explorer'),
-        StringStruct('ProductVersion', '1.1.14')
+        StringStruct('ProductVersion', '1.1.15')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

@@ -16,7 +16,10 @@ from PySide6.QtGui import QDesktopServices, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox  # noqa: E402
 
-from app import APP_VERSION, RELEASE_PAGE, MainWindow, compact_file_path, sanitize_recent_folders, unique_output_path  # noqa: E402
+from app import (  # noqa: E402
+    APP_VERSION, RELEASE_PAGE, MainWindow, cleanup_previous_installations,
+    compact_file_path, sanitize_recent_folders, unique_output_path,
+)
 from project_cache import ProjectCacheStore  # noqa: E402
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions  # noqa: E402
 
@@ -167,6 +170,22 @@ class AppIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(cleaned, [str(legitimate.resolve())])
 
+    def test_startup_cleanup_removes_only_inactive_version_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "CCallHierarchyExplorer"
+            current = root / "app-1.1.15-current"
+            old = root / "app-1.1.15-old"
+            unrelated = root / "user-data"
+            for directory in (current, old, unrelated):
+                directory.mkdir(parents=True)
+            executable = current / "C Call Hierarchy Explorer.exe"
+            executable.touch()
+            removed = cleanup_previous_installations(executable)
+            self.assertIn(old, removed)
+            self.assertTrue(current.exists())
+            self.assertFalse(old.exists())
+            self.assertTrue(unrelated.exists())
+
     def test_file_path_compacts_with_panel_width(self) -> None:
         window = MainWindow()
         metrics = window.file_tree.fontMetrics()
@@ -186,7 +205,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.1.14")
+        self.assertEqual(APP_VERSION, "1.1.15")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
