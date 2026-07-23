@@ -11,7 +11,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from analyzer import CallView, ViewRow  # noqa: E402
-from virtual_tree import COLUMN_WIDTH, FUNCTION_HEIGHT, CallTreeWidget  # noqa: E402
+from virtual_tree import COLUMN_WIDTH, FUNCTION_HEIGHT, WHEEL_ROWS, CallTreeWidget  # noqa: E402
 
 
 def make_view(extra_grandchild: bool = False) -> CallView:
@@ -97,7 +97,7 @@ class VirtualTreeTests(unittest.TestCase):
         self.assertEqual(activated[-1], "")
         widget.close()
 
-    def test_mouse_drag_pans_to_cell_boundaries_without_moving_selection(self) -> None:
+    def test_mouse_drag_uses_pdf_hand_pan_and_blank_keeps_selection(self) -> None:
         rows = [ViewRow(kind="section", title="MAIN")]
         for index in range(30):
             rows.append(ViewRow(
@@ -116,11 +116,12 @@ class VirtualTreeTests(unittest.TestCase):
 
         body = widget.body
         start = QPoint(100, body.viewport().height() // 2)
-        selected_index = body._cell_index_at(start.x(), start.y())
-        body._set_current(selected_index)
+        body._select_by_key("r/task#0", False)
         selected = body._selected_key
-        QTest.mousePress(body.viewport(), Qt.LeftButton, pos=start)
+        QTest.mousePress(body.viewport(), Qt.RightButton, pos=start)
         self.assertTrue(body._drag_scrolling)
+        self.assertEqual(body._selected_key, selected)
+        self.assertEqual(body.viewport().cursor().shape(), Qt.ClosedHandCursor)
         body.verticalScrollBar().setValue(FUNCTION_HEIGHT * 10)
         body.horizontalScrollBar().setValue(COLUMN_WIDTH * 2)
         body._drag_start_vertical = body.verticalScrollBar().value()
@@ -129,19 +130,39 @@ class VirtualTreeTests(unittest.TestCase):
         start_horizontal = body._drag_start_horizontal
 
         body._drag_position = start + QPoint(COLUMN_WIDTH * 2 + 20, FUNCTION_HEIGHT * 2 + 3)
+        body._drag_moved = True
         body._drag_scroll_step()
-        self.assertEqual(body.verticalScrollBar().value(), start_vertical - FUNCTION_HEIGHT * 2)
-        self.assertEqual(body.horizontalScrollBar().value(), max(0, start_horizontal - COLUMN_WIDTH * 2))
+        self.assertEqual(body.verticalScrollBar().value(), start_vertical - (FUNCTION_HEIGHT * 2 + 3))
+        self.assertEqual(body.horizontalScrollBar().value(), max(0, start_horizontal - (COLUMN_WIDTH * 2 + 20)))
         self.assertEqual(body._selected_key, selected)
 
         body._drag_position = start - QPoint(COLUMN_WIDTH + 30, FUNCTION_HEIGHT * 3 + 4)
         body._drag_scroll_step()
-        self.assertEqual(body.verticalScrollBar().value(), start_vertical + FUNCTION_HEIGHT * 3)
-        self.assertEqual(body.horizontalScrollBar().value(), start_horizontal + COLUMN_WIDTH)
+        self.assertEqual(body.verticalScrollBar().value(), start_vertical + FUNCTION_HEIGHT * 3 + 4)
+        self.assertEqual(body.horizontalScrollBar().value(), start_horizontal + COLUMN_WIDTH + 30)
         self.assertEqual(body._selected_key, selected)
 
-        QTest.mouseRelease(body.viewport(), Qt.LeftButton, pos=start)
+        QTest.mouseRelease(body.viewport(), Qt.RightButton, pos=start)
         self.assertFalse(body._drag_scrolling)
+        self.assertEqual(body._selected_key, selected)
+        self.assertEqual(body.viewport().cursor().shape(), Qt.ArrowCursor)
+
+        blank = QPoint(COLUMN_WIDTH + 80, 10)
+        QTest.mousePress(body.viewport(), Qt.MiddleButton, pos=blank)
+        self.assertTrue(body._drag_scrolling)
+        self.assertEqual(body._selected_key, selected)
+        QTest.mouseRelease(body.viewport(), Qt.MiddleButton, pos=blank)
+
+        QTest.mousePress(body.viewport(), Qt.LeftButton, pos=start)
+        self.assertFalse(body._drag_scrolling)
+        QTest.mouseRelease(body.viewport(), Qt.LeftButton, pos=start)
+        widget.close()
+
+    def test_mouse_wheel_uses_excel_like_three_row_step(self) -> None:
+        self.assertEqual(WHEEL_ROWS, 3)
+        widget = CallTreeWidget()
+        self.assertEqual(widget.body._wheel_scroll_delta(120), -FUNCTION_HEIGHT * 3)
+        self.assertEqual(widget.body._wheel_scroll_delta(-120), FUNCTION_HEIGHT * 3)
         widget.close()
 
     def test_stage_header_toggles_every_subtree_at_that_depth(self) -> None:

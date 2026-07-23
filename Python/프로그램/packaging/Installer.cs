@@ -13,8 +13,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Installer for C Call Hierarchy Explorer")]
 [assembly: AssemblyCompany("Call Hierarchy Tools")]
 [assembly: AssemblyProduct("C Call Hierarchy Explorer")]
-[assembly: AssemblyVersion("1.1.17.0")]
-[assembly: AssemblyFileVersion("1.1.17.0")]
+[assembly: AssemblyVersion("1.1.18.0")]
+[assembly: AssemblyFileVersion("1.1.18.0")]
 
 namespace CCallHierarchyExplorerSetup
 {
@@ -69,7 +69,7 @@ namespace CCallHierarchyExplorerSetup
     internal sealed class InstallerForm : Form
     {
         private const string AppName = "C Call Hierarchy Explorer";
-        private const string AppVersion = "1.1.17";
+        private const string AppVersion = "1.1.18";
         private const string AppId = "CCallHierarchyExplorer";
         private const string ExeName = "C Call Hierarchy Explorer.exe";
 
@@ -298,7 +298,7 @@ namespace CCallHierarchyExplorerSetup
                 TryDeleteInactiveInstallation(directory);
             }
 
-            // Clean the pre-1.1.17 fixed-layout payload only when Windows has released it.
+            // Clean the pre-1.1.18 fixed-layout payload only when Windows has released it.
             string legacyExecutable = Path.Combine(installRoot, ExeName);
             if (CanOpenExclusively(legacyExecutable))
             {

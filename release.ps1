@@ -165,12 +165,19 @@ if ($remoteTag.Count -ne 1) {
 
 $actionsUrl = "https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/actions/workflows/release.yml"
 $releaseUrl = "https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/tag/$tag"
-Write-Host "원격 최신 태그 확인 완료: $tag" -ForegroundColor Green
 
 $assetBase = "https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/download/$tag"
 $setupName = "C-Call-Hierarchy-Explorer-Setup-$Version.exe"
 $portableName = "C-Call-Hierarchy-Explorer-Portable-$Version.exe"
 $checksumName = "SHA256SUMS.txt"
+
+$initialWaitSeconds = 90
+Write-Host "GitHub Actions에서 $tag 빌드 자산을 생성하고 있습니다."
+Write-Host -NoNewline "["
+for ($elapsed = 0; $elapsed -lt $initialWaitSeconds; $elapsed += 10) {
+    Start-Sleep -Seconds 10
+    Write-Host -NoNewline "o"
+}
 $buildDeadline = (Get-Date).AddMinutes(10)
 $buildReady = $false
 while ((Get-Date) -lt $buildDeadline) {
@@ -180,30 +187,40 @@ while ((Get-Date) -lt $buildDeadline) {
         $checksumText = (New-Object Net.WebClient).DownloadString("$assetBase/$checksumName")
         $setupSize = [long]$setupHead.Headers["Content-Length"]
         $portableSize = [long]$portableHead.Headers["Content-Length"]
-        $setupDigestFound = $checksumText -match "(?im)^[0-9a-f]{64}\s+\*?$([regex]::Escape($setupName))\s*$"
-        $portableDigestFound = $checksumText -match "(?im)^[0-9a-f]{64}\s+\*?$([regex]::Escape($portableName))\s*$"
+        $setupDigestMatch = [regex]::Match(
+            $checksumText,
+            "(?im)^(?<digest>[0-9a-f]{64})\s+\*?$([regex]::Escape($setupName))\s*$"
+        )
+        $portableDigestMatch = [regex]::Match(
+            $checksumText,
+            "(?im)^(?<digest>[0-9a-f]{64})\s+\*?$([regex]::Escape($portableName))\s*$"
+        )
         if (
             [int]$setupHead.StatusCode -eq 200 -and
             [int]$portableHead.StatusCode -eq 200 -and
             $setupSize -gt 0 -and
             $portableSize -gt 0 -and
-            $setupDigestFound -and
-            $portableDigestFound
+            $setupDigestMatch.Success -and
+            $portableDigestMatch.Success
         ) {
             $buildReady = $true
+            Write-Host "] 완료"
             Write-Host "태그와 빌드 자산 확인 완료: $tag" -ForegroundColor Green
             Write-Host "설치 파일: $setupName ($setupSize bytes)"
+            Write-Host "설치 SHA-256: $($setupDigestMatch.Groups['digest'].Value.ToLowerInvariant())"
             Write-Host "포터블 파일: $portableName ($portableSize bytes)"
+            Write-Host "포터블 SHA-256: $($portableDigestMatch.Groups['digest'].Value.ToLowerInvariant())"
             Write-Host "SHA-256 목록: $checksumName"
             break
         }
     } catch {
         # The tag appears before GitHub Actions finishes uploading release assets.
     }
-    Write-Host "GitHub Actions에서 $tag 빌드 자산을 생성하고 있습니다..."
     Start-Sleep -Seconds 10
+    Write-Host -NoNewline "o"
 }
 if (-not $buildReady) {
+    Write-Host "] 확인 시간 초과"
     throw "$tag 태그는 확인했지만 10분 안에 설치 빌드 자산을 확인하지 못했습니다. Actions 페이지를 확인하십시오: $actionsUrl"
 }
 Write-Host "릴리스 확인: $releaseUrl"
