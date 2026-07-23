@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "C Call Hierarchy Explorer"
-$appVersion = "1.1.12"
+$appVersion = "1.1.13"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -115,6 +115,61 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupExe)) {
     throw "Installer compilation failed. Exit code: $LASTEXITCODE"
 }
 Remove-Item -LiteralPath $payloadZip -Force
+
+$installerTestRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$installerTestDir = Join-Path $installerTestRoot ("CCH-InstallerTest-" + [guid]::NewGuid().ToString("N"))
+$previousInstallerTestDir = $env:CCH_INSTALLER_TEST_DIR
+try {
+    $env:CCH_INSTALLER_TEST_DIR = $installerTestDir
+    $installerSmoke = Start-Process -FilePath $setupExe -ArgumentList "/S" -Wait -PassThru
+    if ($installerSmoke.ExitCode -ne 0) {
+        throw "Installer transaction test failed with exit code $($installerSmoke.ExitCode)."
+    }
+    $installedTestExe = Join-Path $installerTestDir "$appName.exe"
+    $installedTestDll = Join-Path $installerTestDir "_internal\python312.dll"
+    if (-not (Test-Path -LiteralPath $installedTestExe) -or -not (Test-Path -LiteralPath $installedTestDll)) {
+        throw "Installer transaction test did not produce the application and Python DLL."
+    }
+    $installedTestSmoke = Start-Process -FilePath $installedTestExe -ArgumentList "--smoke-test" -Wait -PassThru
+    if ($installedTestSmoke.ExitCode -ne 0) {
+        throw "Installed application test failed with exit code $($installedTestSmoke.ExitCode)."
+    }
+
+    $lockedExecutable = [IO.File]::Open(
+        $installedTestExe,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::None
+    )
+    try {
+        $lockedUpgrade = Start-Process -FilePath $setupExe -ArgumentList "/S" -Wait -PassThru
+        if ($lockedUpgrade.ExitCode -eq 0) {
+            throw "Installer lock test unexpectedly replaced a running application."
+        }
+        if (-not (Test-Path -LiteralPath $installedTestExe) -or -not (Test-Path -LiteralPath $installedTestDll)) {
+            throw "Installer lock failure did not preserve the previous application."
+        }
+    } finally {
+        $lockedExecutable.Dispose()
+    }
+
+    $retryUpgrade = Start-Process -FilePath $setupExe -ArgumentList "/S" -Wait -PassThru
+    if ($retryUpgrade.ExitCode -ne 0) {
+        throw "Installer retry test failed with exit code $($retryUpgrade.ExitCode)."
+    }
+    $retrySmoke = Start-Process -FilePath $installedTestExe -ArgumentList "--smoke-test" -Wait -PassThru
+    if ($retrySmoke.ExitCode -ne 0) {
+        throw "Retried installation application test failed with exit code $($retrySmoke.ExitCode)."
+    }
+} finally {
+    $env:CCH_INSTALLER_TEST_DIR = $previousInstallerTestDir
+    $resolvedInstallerTest = [IO.Path]::GetFullPath($installerTestDir)
+    $installerTestUnderTemp = $resolvedInstallerTest.StartsWith($installerTestRoot, [StringComparison]::OrdinalIgnoreCase)
+    $installerTestSafeName = (Split-Path $resolvedInstallerTest -Leaf).StartsWith("CCH-InstallerTest-", [StringComparison]::Ordinal)
+    if ($installerTestUnderTemp -and $installerTestSafeName -and (Test-Path -LiteralPath $resolvedInstallerTest)) {
+        Remove-Item -LiteralPath $resolvedInstallerTest -Recurse -Force
+    }
+}
 
 $portableHash = (Get-FileHash -LiteralPath $portableExe -Algorithm SHA256).Hash
 $setupHash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash

@@ -24,11 +24,14 @@ from project_cache import ProjectCacheStore
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
-from update_service import RELEASE_PAGE, ReleaseInfo, UpdateError, download_asset, fetch_latest_release, is_newer_version
+from update_service import (
+    RELEASE_PAGE, ReleaseInfo, UpdateError, download_asset, fetch_latest_release,
+    is_newer_version, verify_downloaded_asset,
+)
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.12"
+APP_VERSION = "1.1.13"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 
@@ -1156,6 +1159,8 @@ class MainWindow(QMainWindow):
         if self.busy:
             QTimer.singleShot(15000, self._startup_update_check)
             return
+        if self._offer_pending_update_retry():
+            return
         last_check = float(self.settings.value("update/lastCheckEpoch", 0) or 0)
         if time.time() - last_check >= 24 * 60 * 60:
             self._check_program_update(False)
@@ -1259,9 +1264,19 @@ class MainWindow(QMainWindow):
                 progress=lambda current, total: progress("업데이트 다운로드", current, total, release.setup.name),
             )
 
-        self._start_update_task(task, self._update_download_ready, "업데이트 설치 파일 준비 중…", True)
+        self._start_update_task(
+            task,
+            lambda path: self._update_download_ready(path, release),
+            "업데이트 설치 파일 준비 중…",
+            True,
+        )
 
-    def _update_download_ready(self, path: Path) -> None:
+    def _update_download_ready(self, path: Path, release: ReleaseInfo) -> None:
+        self.settings.setValue("update/pendingInstaller", str(path))
+        self.settings.setValue("update/pendingVersion", release.version)
+        self.settings.setValue("update/pendingSize", release.setup.size)
+        self.settings.setValue("update/pendingSha256", release.setup.sha256)
+        self.settings.sync()
         self.status_label.setText(f"업데이트 검증 완료 · {path.name}")
         answer = QMessageBox.question(
             self,
@@ -1273,14 +1288,56 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.Yes:
             return
-        started = QProcess.startDetached(str(path), [])
+        self._launch_update_installer(path)
+
+    def _launch_update_installer(self, path: Path) -> bool:
+        started = QProcess.startDetached(str(path), ["--wait-pid", str(QApplication.applicationPid())])
         success = started[0] if isinstance(started, tuple) else bool(started)
         if not success:
             QMessageBox.critical(self, "업데이트 실행 실패", f"설치 프로그램을 실행하지 못했습니다.\n{path}")
-            return
+            return False
         self._save_cache_now()
         self._closing = True
         QApplication.quit()
+        return True
+
+    def _clear_pending_update(self) -> None:
+        for key in ("pendingInstaller", "pendingVersion", "pendingSize", "pendingSha256"):
+            self.settings.remove(f"update/{key}")
+
+    def _offer_pending_update_retry(self) -> bool:
+        version = str(self.settings.value("update/pendingVersion", "") or "")
+        path_value = str(self.settings.value("update/pendingInstaller", "") or "")
+        if not version or not path_value:
+            return False
+        try:
+            if not is_newer_version(version, APP_VERSION):
+                self._clear_pending_update()
+                return False
+        except UpdateError:
+            self._clear_pending_update()
+            return False
+        path = Path(path_value)
+        try:
+            expected_size = int(self.settings.value("update/pendingSize", 0) or 0)
+            expected_sha256 = str(self.settings.value("update/pendingSha256", "") or "")
+            verify_downloaded_asset(path, expected_size, expected_sha256)
+        except (UpdateError, TypeError, ValueError):
+            self._clear_pending_update()
+            self.settings.setValue("update/lastCheckEpoch", 0)
+            return False
+        answer = QMessageBox.question(
+            self,
+            "업데이트 설치 재시도",
+            f"이전에 다운로드한 {version} 설치 파일이 남아 있습니다.\n"
+            "이전 설치가 완료되지 않았다면 지금 다시 실행할 수 있습니다.\n\n"
+            f"설치 파일: {path.name}\n\n다시 설치하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self._launch_update_installer(path)
+        return True
 
     def _test_update_download(self) -> None:
         answer = QMessageBox.question(

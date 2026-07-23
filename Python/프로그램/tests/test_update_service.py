@@ -13,6 +13,7 @@ from update_service import (
     download_asset,
     is_newer_version,
     parse_release,
+    verify_downloaded_asset,
 )
 
 
@@ -92,6 +93,17 @@ class UpdateServiceTests(unittest.TestCase):
                 download_asset(asset, output)
             self.assertFalse(output.exists())
             self.assertFalse(output.with_suffix(output.suffix + ".part").exists())
+
+    def test_existing_installer_is_reverified_before_retry(self) -> None:
+        content = b"previously verified installer"
+        digest = hashlib.sha256(content).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "setup.exe"
+            output.write_bytes(content)
+            self.assertEqual(verify_downloaded_asset(output, len(content), digest), output)
+            output.write_bytes(content + b"tampered")
+            with self.assertRaises(UpdateError):
+                verify_downloaded_asset(output, len(content), digest)
 
 
 if __name__ == "__main__":

@@ -13,8 +13,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Installer for C Call Hierarchy Explorer")]
 [assembly: AssemblyCompany("Call Hierarchy Tools")]
 [assembly: AssemblyProduct("C Call Hierarchy Explorer")]
-[assembly: AssemblyVersion("1.1.12.0")]
-[assembly: AssemblyFileVersion("1.1.12.0")]
+[assembly: AssemblyVersion("1.1.13.0")]
+[assembly: AssemblyFileVersion("1.1.13.0")]
 
 namespace CCallHierarchyExplorerSetup
 {
@@ -25,11 +25,12 @@ namespace CCallHierarchyExplorerSetup
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            int waitForProcessId = ParseWaitProcessId(args);
             if (Array.Exists(args, delegate(string value) { return string.Equals(value, "/S", StringComparison.OrdinalIgnoreCase); }))
             {
                 try
                 {
-                    using (InstallerForm installer = new InstallerForm()) installer.InstallSilently();
+                    using (InstallerForm installer = new InstallerForm(waitForProcessId)) installer.InstallSilently();
                     Environment.ExitCode = 0;
                 }
                 catch
@@ -38,7 +39,7 @@ namespace CCallHierarchyExplorerSetup
                 }
                 return;
             }
-            using (InstallerForm installer = new InstallerForm())
+            using (InstallerForm installer = new InstallerForm(waitForProcessId))
             {
                 Application.Run(installer);
                 if (installer.LaunchAfterClose)
@@ -50,22 +51,37 @@ namespace CCallHierarchyExplorerSetup
                 }
             }
         }
+
+        private static int ParseWaitProcessId(string[] args)
+        {
+            for (int index = 0; index + 1 < args.Length; index++)
+            {
+                if (string.Equals(args[index], "--wait-pid", StringComparison.OrdinalIgnoreCase))
+                {
+                    int processId;
+                    if (int.TryParse(args[index + 1], out processId) && processId > 0) return processId;
+                }
+            }
+            return 0;
+        }
     }
 
     internal sealed class InstallerForm : Form
     {
         private const string AppName = "C Call Hierarchy Explorer";
-        private const string AppVersion = "1.1.12";
+        private const string AppVersion = "1.1.13";
         private const string AppId = "CCallHierarchyExplorer";
         private const string ExeName = "C Call Hierarchy Explorer.exe";
 
         private readonly Label status;
         private readonly ProgressBar progress;
         private readonly Button installButton;
+        private readonly int waitForProcessId;
         internal bool LaunchAfterClose { get; private set; }
 
-        internal InstallerForm()
+        internal InstallerForm(int waitForProcessId)
         {
+            this.waitForProcessId = waitForProcessId;
             Text = AppName + " Setup";
             ClientSize = new Size(560, 245);
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -162,39 +178,153 @@ namespace CCallHierarchyExplorerSetup
         private void InstallApplication()
         {
             string installDir = GetInstallDir();
-            if (Directory.Exists(installDir))
-            {
-                Directory.Delete(installDir, true);
-            }
-            Directory.CreateDirectory(installDir);
-            status.Text = "프로그램 파일을 설치하고 있습니다...";
-            Application.DoEvents();
+            string parentDir = Path.GetDirectoryName(installDir);
+            Directory.CreateDirectory(parentDir);
+            string transactionId = Guid.NewGuid().ToString("N");
+            string stagingDir = installDir + ".new-" + transactionId;
+            string backupDir = installDir + ".backup-" + transactionId;
             string payloadArchive = Path.Combine(Path.GetTempPath(), AppId + "-" + Guid.NewGuid().ToString("N") + ".zip");
+            bool previousMoved = false;
+            bool newInstalled = false;
             try
             {
+                status.Text = "새 버전 파일을 준비하고 있습니다...";
+                Application.DoEvents();
+                Directory.CreateDirectory(stagingDir);
                 ExtractResource("Payload.zip", payloadArchive, true);
-                ZipFile.ExtractToDirectory(payloadArchive, installDir);
+                ZipFile.ExtractToDirectory(payloadArchive, stagingDir);
+                ExtractResource("UninstallScript", Path.Combine(stagingDir, "uninstall.ps1"), false);
+                ValidateStagedApplication(stagingDir);
+                progress.Value = 82;
+
+                WaitForPreviousApplication();
+                status.Text = "검증된 새 버전으로 교체하고 있습니다...";
+                Application.DoEvents();
+                if (Directory.Exists(installDir))
+                {
+                    Directory.Move(installDir, backupDir);
+                    previousMoved = true;
+                }
+                Directory.Move(stagingDir, installDir);
+                newInstalled = true;
+                progress.Value = 88;
+
+                status.Text = "바로가기와 제거 정보를 등록하고 있습니다...";
+                Application.DoEvents();
+                if (!IsTestInstall())
+                {
+                    string startMenu = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                        "Programs", AppName + ".lnk");
+                    string desktop = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                        AppName + ".lnk");
+                    CreateShortcut(startMenu);
+                    CreateShortcut(desktop);
+                    RegisterUninstaller();
+                }
+                TryDeleteDirectory(backupDir);
+                previousMoved = false;
+                progress.Value = 96;
+            }
+            catch (Exception installError)
+            {
+                Exception rollbackError = null;
+                try
+                {
+                    if (newInstalled && Directory.Exists(installDir)) Directory.Delete(installDir, true);
+                    if (previousMoved && Directory.Exists(backupDir)) Directory.Move(backupDir, installDir);
+                }
+                catch (Exception error)
+                {
+                    rollbackError = error;
+                }
+                if (rollbackError != null)
+                {
+                    throw new IOException(
+                        "설치에 실패했고 이전 버전 자동 복원도 완료하지 못했습니다. 백업 폴더를 보존했습니다: "
+                        + backupDir + Environment.NewLine + rollbackError.Message,
+                        installError);
+                }
+                throw new IOException(
+                    "설치에 실패했지만 이전 버전은 안전하게 복원했습니다. 실행 중인 프로그램을 닫고 설치 버튼을 다시 누르십시오."
+                    + Environment.NewLine + installError.Message,
+                    installError);
             }
             finally
             {
                 if (File.Exists(payloadArchive)) File.Delete(payloadArchive);
+                TryDeleteDirectory(stagingDir);
+                if (!previousMoved) TryDeleteDirectory(backupDir);
             }
-            progress.Value = 82;
-            ExtractResource("UninstallScript", Path.Combine(installDir, "uninstall.ps1"), false);
-            progress.Value = 88;
+        }
 
-            status.Text = "바로가기와 제거 정보를 등록하고 있습니다...";
+        private void ValidateStagedApplication(string stagingDir)
+        {
+            string executable = Path.Combine(stagingDir, ExeName);
+            string pythonDll = Path.Combine(stagingDir, "_internal", "python312.dll");
+            if (!File.Exists(executable)) throw new IOException("새 버전 실행 파일이 설치 패키지에 없습니다.");
+            if (!File.Exists(pythonDll)) throw new IOException("새 버전 Python 런타임 DLL이 설치 패키지에 없습니다.");
+        }
+
+        private void WaitForPreviousApplication()
+        {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(IsTestInstall() ? 3 : 30);
+            status.Text = "실행 중인 이전 버전이 종료되기를 기다리고 있습니다...";
             Application.DoEvents();
-            string startMenu = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-                "Programs", AppName + ".lnk");
-            string desktop = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                AppName + ".lnk");
-            CreateShortcut(startMenu);
-            CreateShortcut(desktop);
-            RegisterUninstaller();
-            progress.Value = 96;
+            while (DateTime.UtcNow < deadline)
+            {
+                bool parentExited = true;
+                if (waitForProcessId > 0)
+                {
+                    try
+                    {
+                        using (Process process = Process.GetProcessById(waitForProcessId))
+                        {
+                            parentExited = process.HasExited;
+                        }
+                    }
+                    catch (ArgumentException)
+                    {
+                        parentExited = true;
+                    }
+                }
+                if (parentExited && CanReplaceInstalledApplication()) return;
+                Application.DoEvents();
+                Thread.Sleep(250);
+            }
+            throw new IOException("기존 프로그램이 아직 실행 중입니다. 프로그램을 완전히 닫은 후 설치 버튼을 다시 누르십시오.");
+        }
+
+        private bool CanReplaceInstalledApplication()
+        {
+            string executable = GetInstalledExe();
+            if (!File.Exists(executable)) return true;
+            try
+            {
+                using (FileStream stream = new FileStream(executable, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+                return true;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private static void TryDeleteDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path)) Directory.Delete(path, true);
+            }
+            catch
+            {
+                // A verified installation must not be reported as failed only because backup cleanup was delayed.
+            }
         }
 
         private void ExtractResource(string resourceName, string destination, bool updateProgress)
@@ -258,7 +388,24 @@ namespace CCallHierarchyExplorerSetup
 
         private static string GetInstallDir()
         {
+            string testDirectory = Environment.GetEnvironmentVariable("CCH_INSTALLER_TEST_DIR");
+            if (!string.IsNullOrWhiteSpace(testDirectory))
+            {
+                string fullTarget = Path.GetFullPath(testDirectory);
+                string fullTemp = Path.GetFullPath(Path.GetTempPath());
+                if (!fullTarget.StartsWith(fullTemp, StringComparison.OrdinalIgnoreCase)
+                    || !Path.GetFileName(fullTarget).StartsWith("CCH-InstallerTest-", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Unsafe installer test directory.");
+                }
+                return fullTarget;
+            }
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", AppId);
+        }
+
+        private static bool IsTestInstall()
+        {
+            return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CCH_INSTALLER_TEST_DIR"));
         }
 
         private static string GetInstalledExe()

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import hashlib
 import tempfile
 import time
 import unittest
@@ -13,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtGui import QDesktopServices, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox  # noqa: E402
 
 from app import APP_VERSION, MainWindow, compact_file_path, sanitize_recent_folders, unique_output_path  # noqa: E402
 from project_cache import ProjectCacheStore  # noqa: E402
@@ -117,6 +118,31 @@ class AppIntegrationTests(unittest.TestCase):
             (root / "tree_1.xlsx").touch()
             self.assertEqual(unique_output_path(original).name, "tree_2.xlsx")
 
+    def test_update_installer_waits_for_current_process_and_can_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            installer = Path(temporary) / "setup.exe"
+            content = b"verified setup"
+            installer.write_bytes(content)
+            window = MainWindow()
+            window.settings.setValue("update/pendingInstaller", str(installer))
+            window.settings.setValue("update/pendingVersion", "9.9.9")
+            window.settings.setValue("update/pendingSize", len(content))
+            window.settings.setValue("update/pendingSha256", hashlib.sha256(content).hexdigest())
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.No):
+                self.assertTrue(window._offer_pending_update_retry())
+            with (
+                patch("app.QProcess.startDetached", return_value=(True, 1234)) as start_detached,
+                patch("app.QApplication.quit"),
+                patch.object(window, "_save_cache_now"),
+            ):
+                self.assertTrue(window._launch_update_installer(installer))
+            arguments = start_detached.call_args.args[1]
+            self.assertEqual(arguments[0], "--wait-pid")
+            self.assertGreater(int(arguments[1]), 0)
+            window._closing = False
+            window._clear_pending_update()
+            window.close()
+
     def test_recent_folders_remove_test_temporary_paths_and_duplicates(self) -> None:
         legitimate = Path.home() / "Documents" / "C-Call-Hierarchy-Recent-Test"
         with tempfile.TemporaryDirectory() as temporary:
@@ -145,7 +171,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.1.12")
+        self.assertEqual(APP_VERSION, "1.1.13")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:

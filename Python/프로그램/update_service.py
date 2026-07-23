@@ -135,6 +135,29 @@ def update_download_directory() -> Path:
     return base / "C Call Hierarchy Explorer" / "updates"
 
 
+def verify_downloaded_asset(path: str | Path, expected_size: int, expected_sha256: str) -> Path:
+    candidate = Path(path)
+    try:
+        size = candidate.stat().st_size
+    except OSError as error:
+        raise UpdateError(f"다운로드한 설치 파일을 찾을 수 없습니다: {candidate}") from error
+    if size != expected_size:
+        raise UpdateError(f"다운로드 크기가 일치하지 않습니다: {size:,}/{expected_size:,} bytes")
+    digest = hashlib.sha256()
+    try:
+        with candidate.open("rb") as stream:
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+    except OSError as error:
+        raise UpdateError(f"다운로드한 설치 파일을 읽을 수 없습니다: {candidate}") from error
+    if digest.hexdigest().lower() != expected_sha256.lower():
+        raise UpdateError("다운로드한 설치 파일의 SHA-256 검증에 실패했습니다.")
+    return candidate
+
+
 def download_asset(
     asset: ReleaseAsset,
     destination: str | Path | None = None,
