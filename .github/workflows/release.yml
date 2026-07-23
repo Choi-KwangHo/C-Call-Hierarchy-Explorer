@@ -1,0 +1,72 @@
+name: Build and publish Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            Python/프로그램/requirements.txt
+            Python/프로그램/requirements-dev.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          Set-Location "Python/프로그램"
+          python -m venv .venv
+          ./.venv/Scripts/python.exe -m pip install --upgrade pip
+          ./.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+
+      - name: Validate tag and run tests
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $app = Get-Content -Raw -Encoding UTF8 "Python/프로그램/app.py"
+          if ($app -notmatch ('APP_VERSION\s*=\s*"' + [regex]::Escape($version) + '"')) {
+            throw "Tag ${{ github.ref_name }} does not match app.py version $version"
+          }
+          Set-Location "Python/프로그램"
+          ./.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py"
+
+      - name: Build installer and portable executable
+        shell: pwsh
+        run: |
+          Set-Location "Python/프로그램"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "./packaging/build_release.ps1"
+
+      - name: Collect release assets
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $source = "Python/배포/C Call Hierarchy Explorer $version"
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          Copy-Item -LiteralPath "$source/C-Call-Hierarchy-Explorer-Setup-$version.exe" -Destination release-assets
+          Copy-Item -LiteralPath "$source/C-Call-Hierarchy-Explorer-Portable-$version.exe" -Destination release-assets
+          Copy-Item -LiteralPath "$source/SHA256SUMS.txt" -Destination release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: C Call Hierarchy Explorer ${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/C-Call-Hierarchy-Explorer-Setup-*.exe
+            release-assets/C-Call-Hierarchy-Explorer-Portable-*.exe
+            release-assets/SHA256SUMS.txt

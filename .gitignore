@@ -1,0 +1,12 @@
+.agents/
+**/.venv/
+**/__pycache__/
+**/build/
+**/dist/
+*.pyc
+*.spec
+*.xlsx
+Python/배포/
+배포/
+release-assets/
+

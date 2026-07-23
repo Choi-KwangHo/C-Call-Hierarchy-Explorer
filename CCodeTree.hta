@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=9">
+<title>C 코드 호출 구조 트리 v2.3</title>
+<hta:application
+    id="CCodeTreeApp"
+    applicationname="C Code Tree Analyzer 2.3"
+    border="thick"
+    caption="yes"
+    maximizebutton="yes"
+    minimizebutton="yes"
+    scroll="no"
+    singleinstance="no"
+    sysmenu="yes"
+    windowstate="normal" />
+<style>
+html, body { height:100%; margin:0; overflow:hidden; font-family:"Malgun Gothic",Segoe UI,sans-serif; color:#1f2937; background:#f3f5f7; }
+button, input { font-family:inherit; font-size:12px; }
+select { font-family:inherit; font-size:12px; }
+#toolbar { position:relative; height:48px; box-sizing:border-box; padding:8px 10px; background:#17324d; color:white; white-space:nowrap; z-index:20; }
+#toolbar button { border:0; border-radius:4px; padding:7px 13px; margin-right:5px; cursor:pointer; background:#e8eef4; color:#17324d; font-weight:bold; }
+#toolbar button.primary { background:#42b883; color:white; }
+#toolbar button:disabled { color:#8b98a5; background:#d7dde3; cursor:default; }
+#toolbar label { margin-left:9px; font-size:12px; }
+#toolbar input[type=text] { width:230px; padding:5px 7px; border:1px solid #9fb0c1; border-radius:3px; }
+#toolbar input[type=number] { width:48px; padding:4px; }
+#mainRootSelect { width:245px; padding:5px 4px; border:1px solid #9fb0c1; border-radius:3px; background:white; color:#17324d; }
+#rootPath { display:inline-block; max-width:310px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle; color:#d9e6f2; }
+#versionBadge { display:inline-block; margin-left:7px; color:#9fc2df; font-size:11px; vertical-align:middle; }
+#viewMenu { display:none; position:absolute; left:285px; top:42px; width:190px; padding:7px 0; border:1px solid #8095a8; background:white; color:#243746; box-shadow:0 4px 12px rgba(0,0,0,.22); z-index:50; }
+#viewMenu label { display:block; margin:0; padding:7px 12px; cursor:pointer; }
+#viewMenu label:hover { background:#eaf3fb; }
+#status { height:25px; box-sizing:border-box; padding:4px 10px; background:#e7edf3; border-bottom:1px solid #c4d0db; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#progressPanel { height:32px; box-sizing:border-box; padding:6px 10px; background:#f8fafc; border-bottom:1px solid #cbd5df; white-space:nowrap; }
+#progressText { display:inline-block; width:350px; font-size:12px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle; }
+#progressTrack { display:inline-block; height:12px; width:calc(100% - 370px); min-width:180px; border-radius:7px; background:#dce4eb; overflow:hidden; vertical-align:middle; }
+#progressBar { display:block; height:100%; width:0; background:#42b883; transition:width .15s linear; }
+#main { position:absolute; left:0; right:0; top:105px; bottom:0; overflow:hidden; }
+.pane { position:absolute; top:0; bottom:0; overflow:hidden; border-right:1px solid #c7d0d9; background:white; box-sizing:border-box; }
+#functionPane { display:none; left:0; width:28%; }
+#callPane { left:0; right:0; }
+#sourcePane { display:none; right:0; width:35%; }
+.pane.last { border-right:0; }
+.paneHeader { height:34px; box-sizing:border-box; padding:8px 10px; background:#f7f9fb; border-bottom:1px solid #d7dee5; font-weight:bold; font-size:13px; }
+.paneBody { position:absolute; top:34px; bottom:0; left:0; right:0; overflow:auto; padding:6px; box-sizing:border-box; }
+.paneInner { position:absolute; left:0; right:0; top:0; bottom:0; overflow:hidden; }
+.treeLine { min-height:23px; line-height:23px; white-space:nowrap; cursor:pointer; border-radius:3px; font-size:12px; }
+.treeLine:hover { background:#eaf3fb; }
+.treeLine.selected { background:#cfe8ff; }
+.toggle { display:inline-block; width:17px; text-align:center; color:#44647e; font-weight:bold; }
+.nodeIcon { display:inline-block; width:20px; text-align:center; }
+.children { margin-left:17px; border-left:1px dotted #bac7d2; padding-left:2px; display:none; }
+.empty { color:#7b8794; padding:16px; font-size:12px; }
+.badge { color:#657789; margin-left:6px; font-size:11px; }
+.external { color:#9a6700; }
+.cycle { color:#b42318; }
+.rootSection { margin:7px 7px 18px; border:1px solid #aebdca; background:white; box-shadow:0 1px 2px rgba(0,0,0,.05); }
+.rootSectionTitle { padding:8px 11px; border-bottom:1px solid #9fb4c5; background:#dfeefa; color:#244b68; font-weight:bold; font-size:13px; }
+.rootSection.interrupt .rootSectionTitle { background:#fff0d5; color:#754600; border-bottom-color:#e1bd78; }
+.rootSection.independent .rootSectionTitle { background:#e8edf1; color:#465563; border-bottom-color:#b8c3cc; }
+.callGrid { position:relative; overflow:hidden; }
+.callSurface { position:relative; min-height:100%; }
+.callColumnBand { position:absolute; top:0; bottom:0; width:285px; border-right:1px solid #bdcbd6; box-sizing:border-box; background:#f8fbfd; z-index:0; }
+.callColumnBand.even { background:#edf4f8; }
+.callRows { position:relative; z-index:1; }
+.callFlatRow { position:relative; height:27px; border-bottom:1px solid #d6e0e7; box-sizing:border-box; }
+.callFlatRow:hover { background:#fff3bd; }
+.callNodeLine { position:absolute; top:0; width:285px; height:26px; padding:0 7px; line-height:26px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-sizing:border-box; font-family:Consolas,"Malgun Gothic",monospace; font-size:12px; }
+.callBranch { display:inline-block; width:25px; color:#55758d; }
+.callName { color:#172b3a; font-weight:bold; }
+.callMeta { margin-left:8px; color:#6b7d8c; font-family:"Malgun Gothic",sans-serif; }
+.callReference { color:#718096; font-weight:normal; }
+.callExternal { color:#9a6700; font-weight:normal; }
+#sourceTitle { font-weight:normal; color:#4f6477; margin-left:7px; }
+#source { margin:0; padding:10px 12px 30px; font-family:Consolas,"Courier New",monospace; font-size:12px; line-height:18px; white-space:pre; color:#17202a; tab-size:4; }
+#callSticky { position:absolute; left:0; right:0; top:34px; height:32px; overflow:hidden; border-bottom:1px solid #8fa6b8; background:#d7e5ef; z-index:8; }
+#callStickyInner { position:absolute; left:0; top:0; height:31px; white-space:nowrap; }
+.stickyStage { display:inline-block; width:285px; height:31px; padding:4px 7px; border-right:1px solid #9eb1c0; box-sizing:border-box; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:top; color:#284a62; font-size:11px; line-height:22px; background:#d7e5ef; }
+.stickyStage.even { background:#cbdde9; }
+.stickyStage strong { margin-right:6px; color:#17324d; }
+#callTree { top:66px; }
+.changed { color:#137a4c; font-weight:bold; }
+</style>
+<script src="CAnalyzer.js"></script>
+<script src="ExcelExporter.js"></script>
+<script>
+(function () {
+    "use strict";
+
+    var fso = new ActiveXObject("Scripting.FileSystemObject");
+    var rootPath = "";
+    var fileCache = {};
+    var analysis = null;
+    var timerId = null;
+    var expanded = {};
+    var selectedLine = null;
+    var selectedSignature = "";
+    var selectedMainSignature = "";
+    var busy = false;
+    var operationToken = 0;
+    var callSections = [];
+    var callMaxDepth = 1;
+    var stickyTimer = null;
+    var CALL_COLUMN_WIDTH = 285;
+    var excludedFolders = { ".git":1, ".svn":1, ".hg":1, "node_modules":1, "dist":1, "build":1, ".vs":1 };
+
+    function byId(id) { return document.getElementById(id); }
+    function norm(path) { return String(path).replace(/\//g, "\\").toLowerCase(); }
+    function setStatus(text, changed) {
+        byId("status").innerText = text;
+        byId("status").className = changed ? "changed" : "";
+    }
+    function setProgress(phase, current, total, detail) {
+        var percent = total > 0 ? Math.floor(current * 100 / total) : 0;
+        byId("progressText").innerText = phase + (total > 0 ? " " + current + "/" + total : "") + (detail ? " — " + detail : "");
+        byId("progressBar").style.width = (total > 0 ? percent : 8) + "%";
+    }
+    function setBusy(value) {
+        busy = value;
+        byId("folderButton").disabled = value;
+        byId("checkButton").disabled = value;
+        byId("excelButton").disabled = value || !analysis || analysis.functions.length === 0;
+    }
+    function setProgressVisible(visible) {
+        byId("progressPanel").style.display = visible ? "block" : "none";
+        byId("main").style.top = visible ? "105px" : "73px";
+    }
+    function applyViewLayout() {
+        var showLeft = byId("showFunctionPane").checked;
+        var showRight = byId("showSourcePane").checked;
+        byId("functionPane").style.display = showLeft ? "block" : "none";
+        byId("sourcePane").style.display = showRight ? "block" : "none";
+        byId("callPane").style.left = showLeft ? "28%" : "0";
+        byId("callPane").style.right = showRight ? "35%" : "0";
+    }
+    function pad(value) { return value < 10 ? "0" + value : String(value); }
+    function timestamp() {
+        var d = new Date();
+        return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "_" +
+            pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    }
+
+    function chooseFolder() {
+        var shell = new ActiveXObject("Shell.Application");
+        var selected = shell.BrowseForFolder(0, "분석할 C 소스 폴더를 선택하세요.", 0x51, 0);
+        if (!selected) { return; }
+        try { rootPath = selected.Self.Path; } catch (e) { return; }
+        fileCache = {};
+        analysis = null;
+        expanded = {};
+        selectedSignature = "";
+        byId("rootPath").innerText = rootPath;
+        initialLoad();
+    }
+
+    function scanMetadataAsync(token, quiet, done) {
+        var list = [], queue = [], currentFolder = null, files = null, subfolders = null;
+        var foldersDone = 0;
+        if (!rootPath || !fso.FolderExists(rootPath)) { done([], new Error("폴더가 존재하지 않습니다.")); return; }
+        try { queue.push(fso.GetFolder(rootPath)); }
+        catch (e) { done([], e); return; }
+
+        function tick() {
+            var started = new Date().getTime(), operations = 0, file, ext, sub;
+            if (token !== operationToken) { return; }
+            try {
+                while (operations < 120 && new Date().getTime() - started < 25) {
+                    if (!currentFolder) {
+                        if (!queue.length) {
+                            list.sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); });
+                            done(list, null); return;
+                        }
+                        currentFolder = queue.shift();
+                        files = new Enumerator(currentFolder.Files);
+                        subfolders = null;
+                    }
+                    if (files && !files.atEnd()) {
+                        file = files.item(); files.moveNext(); operations += 1;
+                        ext = fso.GetExtensionName(file.Name).toLowerCase();
+                        if (ext === "c" || ext === "h") {
+                            list.push({ key: norm(file.Path), path: file.Path, modified: String(file.DateLastModified) });
+                        }
+                        continue;
+                    }
+                    if (!subfolders) { subfolders = new Enumerator(currentFolder.SubFolders); }
+                    if (!subfolders.atEnd()) {
+                        sub = subfolders.item(); subfolders.moveNext(); operations += 1;
+                        if (!excludedFolders[String(sub.Name).toLowerCase()]) { queue.push(sub); }
+                        continue;
+                    }
+                    currentFolder = null; files = null; subfolders = null; foldersDone += 1;
+                }
+                if (!quiet) { setProgress("폴더 검색", list.length, 0, "폴더 " + foldersDone + "개 확인, C 파일 " + list.length + "개 발견"); }
+                window.setTimeout(tick, 1);
+            } catch (scanError) { done(list, scanError); }
+        }
+        window.setTimeout(tick, 1);
+    }
+
+    function readSource(path) {
+        var stream = new ActiveXObject("ADODB.Stream");
+        var text;
+        stream.Type = 2;
+        stream.Charset = "utf-8";
+        stream.Open();
+        stream.LoadFromFile(path);
+        text = stream.ReadText(-1);
+        stream.Close();
+        if (text.indexOf("\uFFFD") >= 0) {
+            var input = fso.OpenTextFile(path, 1, false, -2);
+            text = input.ReadAll();
+            input.Close();
+        }
+        return text;
+    }
+
+    function parsedFileList() {
+        var parsedFiles = [];
+        var key;
+        for (key in fileCache) {
+            if (fileCache.hasOwnProperty(key) && fileCache[key].parsed) { parsedFiles.push(fileCache[key].parsed); }
+        }
+        parsedFiles.sort(function (a, b) { return norm(a.path) < norm(b.path) ? -1 : 1; });
+        return parsedFiles;
+    }
+
+    function rebuildAnalysisAsync(token, quiet, done) {
+        var session = CAnalyzer.createLinkSession(parsedFileList(), rootPath);
+        function linkTick() {
+            if (token !== operationToken) { return; }
+            if (session.process(12)) {
+                analysis = session.result;
+                refreshMainRootOptions();
+                if (!quiet) { setProgress("UI 트리 구성", 0, analysis.files.length + analysis.functions.length, analysis.functions.length + "개 함수"); }
+                window.setTimeout(function () {
+                    if (token !== operationToken) { return; }
+                    renderAllAsync(token, quiet, function () {
+                    setBusy(false);
+                    done();
+                    });
+                }, 1);
+                return;
+            }
+            if (!quiet) { setProgress("호출 관계 연결", session.index, session.total, "UI가 계속 응답합니다"); }
+            window.setTimeout(linkTick, 1);
+        }
+        window.setTimeout(linkTick, 1);
+    }
+
+    function parseMetadataAsync(metadata, token, quiet, done) {
+        var index = 0, failures = [];
+        function parseTick() {
+            var started = new Date().getTime(), item;
+            if (token !== operationToken) { return; }
+            while (index < metadata.length && new Date().getTime() - started < 25) {
+                item = metadata[index];
+                try {
+                    fileCache[item.key] = {
+                        path: item.path, modified: item.modified,
+                        parsed: CAnalyzer.parseFile(item.path, readSource(item.path))
+                    };
+                } catch (e) { failures.push(item.path); }
+                index += 1;
+            }
+            if (!quiet) { setProgress("C 파일 파싱", index, metadata.length, index < metadata.length ? metadata[index].path : "완료"); }
+            if (index < metadata.length) { window.setTimeout(parseTick, 1); }
+            else { done(failures); }
+        }
+        window.setTimeout(parseTick, 1);
+    }
+
+    function initialLoad() {
+        var token = ++operationToken;
+        setBusy(true);
+        setProgressVisible(true);
+        setStatus("초기 분석을 시작합니다. 작업 중에도 UI를 이동할 수 있습니다.", false);
+        setProgress("폴더 검색 준비", 0, 0, rootPath);
+        scanMetadataAsync(token, false, function (metadata, scanError) {
+            if (token !== operationToken) { return; }
+            if (scanError) { setBusy(false); setStatus("폴더 검색 실패: " + scanError.message, false); return; }
+            parseMetadataAsync(metadata, token, false, function (failures) {
+                rebuildAnalysisAsync(token, false, function () {
+                    setProgress("완료", metadata.length, metadata.length, analysis.functions.length + "개 함수");
+                    setStatus(metadata.length + "개 파일, " + analysis.functions.length + "개 함수 분석 완료" +
+                        (failures.length ? " (읽기 실패 " + failures.length + "개)" : ""), false);
+                    window.setTimeout(function () { setProgressVisible(false); }, 700);
+                    startMonitor();
+                });
+            });
+        });
+    }
+
+    // Poll metadata only. Source content is opened and parsed exclusively for a
+    // new file or a file whose DateLastModified value changed.
+    function checkChanges(force) {
+        var token, current = {}, changed = [], deleted = [];
+        if (busy || !rootPath || (!force && !byId("autoRefresh").checked)) { return; }
+        var quiet = !force;
+        token = ++operationToken;
+        if (quiet) { busy = true; setStatus("자동 감시: 수정 날짜 확인 중…", false); }
+        else { setBusy(true); }
+        if (!quiet) { setProgressVisible(true); setProgress("수정 날짜 확인", 0, 0, "파일 내용은 읽지 않습니다"); }
+        scanMetadataAsync(token, quiet, function (metadata, scanError) {
+            var i, item, old, key, changedMeta = [];
+            if (scanError) { setBusy(false); setStatus("변경 확인 실패: " + scanError.message, false); return; }
+            for (i = 0; i < metadata.length; i += 1) {
+                item = metadata[i]; current[item.key] = item; old = fileCache[item.key];
+                if (!old || old.modified !== item.modified) { changedMeta.push(item); }
+            }
+            for (key in fileCache) {
+                if (fileCache.hasOwnProperty(key) && !current[key]) { deleted.push(fileCache[key].path); delete fileCache[key]; }
+            }
+            if (!changedMeta.length && !deleted.length) {
+                setBusy(false);
+                if (quiet) { setStatus("자동 감시: 변경 없음 — " + new Date().toLocaleTimeString(), false); }
+                else { setProgress("변경 없음", metadata.length, metadata.length, new Date().toLocaleTimeString()); window.setTimeout(function () { setProgressVisible(false); }, 500); }
+                return;
+            }
+            parseMetadataAsync(changedMeta, token, quiet, function () {
+                for (i = 0; i < changedMeta.length; i += 1) { changed.push(changedMeta[i].path); }
+                rebuildAnalysisAsync(token, quiet, function () {
+                    if (!quiet) { setProgress("반영 완료", changed.length + deleted.length, changed.length + deleted.length, new Date().toLocaleTimeString()); window.setTimeout(function () { setProgressVisible(false); }, 500); }
+                    setStatus("자동 반영: 변경/추가 " + changed.length + "개, 삭제 " + deleted.length + "개", true);
+                });
+            });
+        });
+    }
+
+    function startMonitor() {
+        if (timerId) { window.clearInterval(timerId); }
+        timerId = window.setInterval(checkChanges, 2000);
+    }
+
+    function clearElement(el) { while (el.firstChild) { el.removeChild(el.firstChild); } }
+    function appendText(parent, text, className) {
+        var span = document.createElement("span");
+        span.className = className || "";
+        span.appendChild(document.createTextNode(text));
+        parent.appendChild(span);
+        return span;
+    }
+
+    function treeNode(parent, key, label, icon, hasChildren, buildChildren, onSelect, extraClass) {
+        var wrapper = document.createElement("div");
+        var line = document.createElement("div");
+        var toggle = document.createElement("span");
+        var iconSpan = document.createElement("span");
+        var children = document.createElement("div");
+        var built = false;
+        line.className = "treeLine " + (extraClass || "");
+        toggle.className = "toggle";
+        toggle.innerText = hasChildren ? "+" : "·";
+        iconSpan.className = "nodeIcon";
+        iconSpan.innerText = icon;
+        line.appendChild(toggle);
+        line.appendChild(iconSpan);
+        appendText(line, label, "");
+        children.className = "children";
+        wrapper.appendChild(line);
+        wrapper.appendChild(children);
+        parent.appendChild(wrapper);
+
+        function setOpen(open) {
+            if (!hasChildren) { return; }
+            if (open && !built) { buildChildren(children); built = true; }
+            children.style.display = open ? "block" : "none";
+            toggle.innerText = open ? "−" : "+";
+            expanded[key] = open;
+        }
+        line.onclick = function () {
+            if (selectedLine) { selectedLine.className = selectedLine.className.replace(/\s*selected/g, ""); }
+            selectedLine = line;
+            line.className += " selected";
+            if (onSelect) { onSelect(); }
+            if (hasChildren) { setOpen(children.style.display !== "block"); }
+        };
+        toggle.onclick = function () { setOpen(children.style.display !== "block"); window.event.cancelBubble = true; };
+        if (expanded[key]) { setOpen(true); }
+        return wrapper;
+    }
+
+    function functionSignature(fn) { return norm(fn.path) + "|" + fn.name + "|" + fn.startLine; }
+
+    function mainCandidateScore(fn) {
+        var path = CAnalyzer.relativePath(fn.path, rootPath).toLowerCase();
+        var score = fn.calls.length * 5;
+        if (fn.file.toLowerCase() === "main.c") { score += 250; }
+        if (/(^|[\\\/])(src|source|app|application)([\\\/]|$)/.test(path)) { score += 120; }
+        if (/(example|examples|sample|samples|demo|test|tests|benchmark|third.party|external|cmsis|library)/.test(path)) { score -= 800; }
+        score -= path.split(/[\\\/]/).length * 3;
+        return score;
+    }
+
+    function refreshMainRootOptions() {
+        var select = byId("mainRootSelect");
+        var candidates = [], i, fn, best = null, bestScore = -999999, option;
+        while (select.options.length) { select.remove(0); }
+        for (i = 0; i < analysis.functions.length; i += 1) {
+            fn = analysis.functions[i];
+            if (isMainEntry(fn)) { candidates.push(fn); }
+        }
+        for (i = 0; i < candidates.length; i += 1) {
+            fn = candidates[i];
+            if (functionSignature(fn) === selectedMainSignature) { best = fn; break; }
+            if (mainCandidateScore(fn) > bestScore) { bestScore = mainCandidateScore(fn); best = fn; }
+        }
+        if (best) { selectedMainSignature = functionSignature(best); }
+        for (i = 0; i < candidates.length; i += 1) {
+            fn = candidates[i];
+            option = new Option(fn.name + "() — " + CAnalyzer.relativePath(fn.path, rootPath) + ":" + fn.startLine, functionSignature(fn));
+            select.options.add(option);
+            if (functionSignature(fn) === selectedMainSignature) { option.selected = true; }
+        }
+        if (!candidates.length) { select.options.add(new Option("main()을 찾지 못함", "")); }
+        select.disabled = candidates.length === 0;
+    }
+
+    function selectedMainFunction() {
+        var i;
+        for (i = 0; i < analysis.functions.length; i += 1) {
+            if (functionSignature(analysis.functions[i]) === selectedMainSignature) { return analysis.functions[i]; }
+        }
+        return null;
+    }
+
+    function showFunction(fn) {
+        var file = null, i, lines, first, last, n, out = [];
+        selectedSignature = functionSignature(fn);
+        for (i = 0; i < analysis.files.length; i += 1) {
+            if (norm(analysis.files[i].path) === norm(fn.path)) { file = analysis.files[i]; break; }
+        }
+        if (!file) { return; }
+        lines = file.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+        first = Math.max(1, fn.startLine - 3);
+        last = Math.min(lines.length, fn.endLine + 3);
+        for (n = first; n <= last; n += 1) {
+            out.push((n === fn.startLine ? ">" : " ") + ("     " + n).slice(-5) + " | " + lines[n - 1]);
+        }
+        byId("sourceTitle").innerText = fn.name + "() — " + CAnalyzer.relativePath(fn.path, rootPath) +
+            ":" + fn.startLine + "-" + fn.endLine;
+        byId("source").innerText = out.join("\r\n");
+    }
+
+    function renderFunctionTreeAsync(token, quiet, done) {
+        var host = byId("functionTree");
+        var query = byId("searchBox").value.toLowerCase();
+        var i = 0;
+        clearElement(host);
+        if (!analysis || !analysis.files.length) { appendText(host, "분석된 .c/.h 파일이 없습니다.", "empty"); done(); return; }
+        function tick() {
+            var started = new Date().getTime(), file, matches, j, fn;
+            if (token !== operationToken) { return; }
+            while (i < analysis.files.length && new Date().getTime() - started < 20) {
+                file = analysis.files[i]; matches = [];
+                for (j = 0; j < file.functions.length; j += 1) {
+                    fn = file.functions[j];
+                    if (!query || fn.name.toLowerCase().indexOf(query) >= 0 || file.relativePath.toLowerCase().indexOf(query) >= 0) {
+                        matches.push(fn);
+                    }
+                }
+                if (!query || matches.length) {
+                    (function (capturedFile, capturedMatches) {
+                        treeNode(host, "file:" + norm(capturedFile.path), capturedFile.relativePath + " [" + capturedMatches.length + "]", "▣",
+                            capturedMatches.length > 0,
+                            function (children) {
+                                var k, capturedFn;
+                                for (k = 0; k < capturedMatches.length; k += 1) {
+                                    capturedFn = capturedMatches[k];
+                                    (function (f) {
+                                        treeNode(children, "fn:" + functionSignature(f), f.name + "()  L" + f.startLine + "-" + f.endLine,
+                                            "ƒ", false, null, function () { showFunction(f); }, "");
+                                    }(capturedFn));
+                                }
+                            }, null, "");
+                    }(file, matches));
+                }
+                i += 1;
+            }
+            if (!quiet) { setProgress("파일 트리 구성", i, analysis.files.length, "화면 갱신 중"); }
+            if (i < analysis.files.length) { window.setTimeout(tick, 1); }
+            else { done(); }
+        }
+        window.setTimeout(tick, 1);
+    }
+
+    function renderCallChildren(host, fn, stack, keyPrefix) {
+        var i, ref, target, cycle, nextStack = stack + "|" + fn.id + "|";
+        for (i = 0; i < fn.calls.length; i += 1) {
+            ref = fn.calls[i];
+            if (ref.charAt(0) === "?") {
+                treeNode(host, keyPrefix + ":ext:" + ref, ref.substring(1) + "() — 외부/미확인", "?", false, null, null, "external");
+                continue;
+            }
+            target = CAnalyzer.findFunction(analysis, ref);
+            if (!target) { continue; }
+            cycle = nextStack.indexOf("|" + target.id + "|") >= 0;
+            (function (captured, isCycle, capturedStack, capturedKey) {
+                treeNode(host, capturedKey, captured.name + "() — " + captured.file + ":" + captured.startLine,
+                    isCycle ? "↻" : "→", !isCycle && captured.calls.length > 0,
+                    function (children) { renderCallChildren(children, captured, capturedStack, capturedKey); },
+                    function () { showFunction(captured); }, isCycle ? "cycle" : "");
+            }(target, cycle, nextStack, keyPrefix + ":" + target.id));
+        }
+    }
+
+    function isMainEntry(fn) {
+        var name = fn.name.toLowerCase();
+        return name === "main" || name === "winmain" || name === "wwinmain" || name === "_tmain" ||
+            name === "app_main" || name === "main_loop" || name === "mainloop" || name === "main_task";
+    }
+
+    function isInterruptEntry(fn) {
+        return /(^|_)(isr|irq|nmi)(_|$)/i.test(fn.name) || /(irqhandler|_handler|isr)$/i.test(fn.name) ||
+            /\b(__interrupt|interrupt|__irq)\b/i.test(fn.declaration);
+    }
+
+    function projectPrefixForMain(fn) {
+        var value = norm(fn.path);
+        var markers = ["\\core\\", "\\source\\", "\\src\\"];
+        var best = -1, i;
+        for (i = 0; i < markers.length; i += 1) {
+            best = value.indexOf(markers[i]);
+            if (best > 0) { break; }
+        }
+        return best > 0 ? value.substring(0, best) : value.substring(0, value.lastIndexOf("\\"));
+    }
+
+    function belongsToSelectedProject(fn, mainFn) {
+        var prefix;
+        if (!mainFn) { return true; }
+        prefix = projectPrefixForMain(mainFn);
+        return norm(fn.path).indexOf(prefix + "\\") === 0;
+    }
+
+    function markReachable(root, marked) {
+        var stack = [root], fn, i, target;
+        while (stack.length) {
+            fn = stack.pop();
+            if (!fn || marked[fn.id]) { continue; }
+            marked[fn.id] = true;
+            for (i = 0; i < fn.calls.length; i += 1) {
+                if (fn.calls[i].charAt(0) !== "?") {
+                    target = CAnalyzer.findFunction(analysis, fn.calls[i]);
+                    if (target && !marked[target.id]) { stack.push(target); }
+                }
+            }
+        }
+    }
+
+    function callEntryGroups() {
+        var groups = [
+            { title:"MAIN LOOP 시작점", className:"main", roots:[] },
+            { title:"인터럽트 / ISR 독립 시작점", className:"interrupt", roots:[] },
+            { title:"기타 독립 시작점", className:"independent", roots:[] }
+        ];
+        var marked = {}, i, fn, selectedMain = selectedMainFunction();
+        if (selectedMain) { groups[0].roots.push(selectedMain); }
+        for (i = 0; i < analysis.functions.length; i += 1) {
+            fn = analysis.functions[i];
+            if (!isMainEntry(fn) && isInterruptEntry(fn) && belongsToSelectedProject(fn, selectedMain)) { groups[1].roots.push(fn); }
+        }
+        for (i = 0; i < groups[0].roots.length; i += 1) { markReachable(groups[0].roots[i], marked); }
+        for (i = 0; i < groups[1].roots.length; i += 1) { markReachable(groups[1].roots[i], marked); }
+        if (byId("showOtherRoots").checked) {
+            for (i = 0; i < analysis.functions.length; i += 1) {
+                fn = analysis.functions[i];
+                if (!isMainEntry(fn) && !marked[fn.id] && fn.callers.length === 0) {
+                    groups[2].roots.push(fn); markReachable(fn, marked);
+                }
+            }
+            // Include isolated recursive components that have no zero-caller node.
+            for (i = 0; i < analysis.functions.length; i += 1) {
+                fn = analysis.functions[i];
+                if (!isMainEntry(fn) && !marked[fn.id]) { groups[2].roots.push(fn); markReachable(fn, marked); }
+            }
+        }
+        return groups;
+    }
+
+    function createCallNode(host, job, sectionInfo) {
+        var row = document.createElement("div");
+        var line = document.createElement("div");
+        var branch = document.createElement("span");
+        var name = document.createElement("span");
+        var meta = document.createElement("span");
+        row.className = "callFlatRow";
+        line.className = "callNodeLine";
+        line.style.left = ((job.depth - 1) * CALL_COLUMN_WIDTH) + "px";
+        branch.className = "callBranch";
+        branch.innerText = job.depth === 1 ? "" : (job.isLast ? "└─" : "├─");
+        name.className = "callName" + (job.state === "reference" ? " callReference" : "") +
+            (job.state === "external" ? " callExternal" : "") + (job.state === "cycle" ? " cycle" : "");
+        name.innerText = job.name + "()";
+        meta.className = "callMeta";
+        if (job.state === "external") { meta.innerText = "외부/미확인"; }
+        else if (job.state === "cycle") { meta.innerText = "순환 호출"; }
+        else if (job.state === "reference") { meta.innerText = "위에서 전개됨"; }
+        else { meta.innerText = job.fn.file + ":" + job.fn.startLine; }
+        line.appendChild(branch); line.appendChild(name); line.appendChild(meta);
+        row.appendChild(line); host.appendChild(row);
+        row._callPath = job.ancestors.concat([job.name]);
+        sectionInfo.rows.push(row);
+        if (job.depth > sectionInfo.maxDepth) { sectionInfo.maxDepth = job.depth; }
+        if (job.fn && job.state === "normal") { line.onclick = function () { showFunction(job.fn); }; }
+        return host;
+    }
+
+    function renderStickyHeader(path) {
+        var inner = byId("callStickyInner");
+        var key = path.join("|") + "#" + callMaxDepth;
+        var level, cell, strong;
+        if (inner._pathKey !== key) {
+            clearElement(inner);
+            for (level = 1; level <= callMaxDepth; level += 1) {
+                cell = document.createElement("span"); cell.className = "stickyStage" + (level % 2 === 0 ? " even" : "");
+                strong = document.createElement("strong"); strong.innerText = level + "단계";
+                cell.appendChild(strong);
+                cell.appendChild(document.createTextNode(path[level - 1] ? path[level - 1] + "()" : ""));
+                inner.appendChild(cell);
+            }
+            inner._pathKey = key;
+        }
+        inner.style.left = (8 - byId("callTree").scrollLeft) + "px";
+    }
+
+    function updateStickyHeader() {
+        var tree = byId("callTree");
+        var y = tree.scrollTop + 2;
+        var low = 0, high = callSections.length - 1, middle, section = null, rowIndex, path = [];
+        while (low <= high) {
+            middle = Math.floor((low + high) / 2);
+            if (callSections[middle].top <= y) { section = callSections[middle]; low = middle + 1; }
+            else { high = middle - 1; }
+        }
+        if (!section && callSections.length) { section = callSections[0]; }
+        if (section && section.rows.length) {
+            rowIndex = Math.floor((y - section.rowsTop) / 27);
+            if (rowIndex < 0) { rowIndex = 0; }
+            if (rowIndex >= section.rows.length) { rowIndex = section.rows.length - 1; }
+            path = section.rows[rowIndex]._callPath || [];
+        }
+        renderStickyHeader(path);
+    }
+
+    function scheduleStickyHeader() {
+        if (stickyTimer) { return; }
+        stickyTimer = window.setTimeout(function () { stickyTimer = null; updateStickyHeader(); }, 35);
+    }
+
+    function finishCallGrid(surface, sections, maxDepth, host, oldScrollTop, oldScrollLeft) {
+        var width = Math.max(maxDepth * CALL_COLUMN_WIDTH, host.clientWidth - 16);
+        var s, level, band;
+        for (s = 0; s < sections.length; s += 1) {
+            sections[s].element.style.width = width + "px";
+            sections[s].grid.style.width = width + "px";
+            sections[s].rowsHost.style.width = width + "px";
+            for (level = 1; level <= sections[s].maxDepth; level += 1) {
+                band = document.createElement("div");
+                band.className = "callColumnBand" + (level % 2 === 0 ? " even" : "");
+                band.style.left = ((level - 1) * CALL_COLUMN_WIDTH) + "px";
+                sections[s].grid.insertBefore(band, sections[s].rowsHost);
+            }
+        }
+        clearElement(host);
+        surface.style.width = width + "px";
+        host.appendChild(surface);
+        callSections = sections; callMaxDepth = Math.max(1, maxDepth);
+        for (s = 0; s < callSections.length; s += 1) {
+            callSections[s].top = callSections[s].element.offsetTop;
+            callSections[s].rowsTop = callSections[s].top + callSections[s].title.offsetHeight;
+        }
+        host.scrollTop = Math.min(oldScrollTop, Math.max(0, host.scrollHeight - host.clientHeight));
+        host.scrollLeft = Math.min(oldScrollLeft, Math.max(0, host.scrollWidth - host.clientWidth));
+        renderStickyHeader([]);
+        updateStickyHeader();
+    }
+
+    function renderCallTreeAsync(token, quiet, done) {
+        var host = byId("callTree");
+        var surface = document.createElement("div");
+        surface.className = "callSurface";
+        var oldScrollTop = host.scrollTop, oldScrollLeft = host.scrollLeft;
+        var query = byId("searchBox").value.toLowerCase();
+        var groups, roots = [], sections = [], g, r, section, sectionTitle, grid, rowsHost, rootFn, sectionInfo;
+        var rootIndex = 0, stack = [], visited = {}, expandedAcrossRoots = {}, processed = 0, maxDepth = 1;
+        if (!analysis || !analysis.functions.length) { clearElement(host); appendText(host, "분석된 함수가 없습니다.", "empty"); done(); return; }
+        groups = callEntryGroups();
+        if (query) {
+            groups = [{ title:"검색 결과", className:"independent", roots:[] }];
+            for (g = 0; g < analysis.functions.length; g += 1) {
+                if ((!isMainEntry(analysis.functions[g]) || functionSignature(analysis.functions[g]) === selectedMainSignature) &&
+                        (analysis.functions[g].name.toLowerCase().indexOf(query) >= 0 || analysis.functions[g].file.toLowerCase().indexOf(query) >= 0)) {
+                    groups[0].roots.push(analysis.functions[g]);
+                }
+            }
+        }
+        for (g = 0; g < groups.length; g += 1) {
+            if (!groups[g].roots.length) { continue; }
+            for (r = 0; r < groups[g].roots.length; r += 1) {
+                rootFn = groups[g].roots[r];
+                if (!query || rootFn.name.toLowerCase().indexOf(query) >= 0 || rootFn.file.toLowerCase().indexOf(query) >= 0) {
+                    section = document.createElement("div"); section.className = "rootSection " + groups[g].className;
+                    sectionTitle = document.createElement("div"); sectionTitle.className = "rootSectionTitle";
+                    sectionTitle.innerText = groups[g].title + " — " + CAnalyzer.relativePath(rootFn.path, rootPath) + ":" + rootFn.startLine;
+                    grid = document.createElement("div"); grid.className = "callGrid";
+                    rowsHost = document.createElement("div"); rowsHost.className = "callRows"; grid.appendChild(rowsHost);
+                    section.appendChild(sectionTitle); section.appendChild(grid); surface.appendChild(section);
+                    sectionInfo = { element:section, title:sectionTitle, grid:grid, rowsHost:rowsHost, rows:[], maxDepth:1, top:0, rowsTop:0 };
+                    sections.push(sectionInfo);
+                    roots.push({ fn:rootFn, host:rowsHost, section:sectionInfo, isLast:true });
+                }
+            }
+        }
+
+        function startRoot() {
+            var root;
+            if (rootIndex >= roots.length) { return false; }
+            root = roots[rootIndex]; rootIndex += 1; visited = {};
+            stack.push({ fn:root.fn, name:root.fn.name, host:root.host, section:root.section, depth:1,
+                path:"", ancestors:[], state:"normal", isLast:root.isLast });
+            return true;
+        }
+
+        function tick() {
+            var started = new Date().getTime(), job, childHost, calls, i, ref, target, state, nextPath;
+            if (token !== operationToken) { return; }
+            while (new Date().getTime() - started < 20) {
+                if (!stack.length && !startRoot()) { finishCallGrid(surface, sections, maxDepth, host, oldScrollTop, oldScrollLeft); done(); return; }
+                job = stack.pop();
+                if (job.fn && job.state === "normal") {
+                    if (job.path.indexOf("|" + job.fn.id + "|") >= 0) { job.state = "cycle"; }
+                    else if (visited[job.fn.id]) { job.state = "reference"; }
+                    else if (job.depth > 1 && expandedAcrossRoots[job.fn.id]) { job.state = "reference"; }
+                    else { visited[job.fn.id] = true; expandedAcrossRoots[job.fn.id] = true; }
+                }
+                childHost = createCallNode(job.host, job, job.section); processed += 1;
+                if (job.depth > maxDepth) { maxDepth = job.depth; }
+                if (job.state === "normal" && job.fn.calls.length) {
+                    calls = job.fn.calls; nextPath = job.path + "|" + job.fn.id + "|";
+                    for (i = calls.length - 1; i >= 0; i -= 1) {
+                        ref = calls[i];
+                        if (ref.charAt(0) === "?") {
+                            stack.push({ fn:null, name:ref.substring(1), host:childHost, section:job.section, depth:job.depth + 1,
+                                path:nextPath, ancestors:job.ancestors.concat([job.name]), state:"external", isLast:i === calls.length - 1 });
+                        } else {
+                            target = CAnalyzer.findFunction(analysis, ref);
+                            if (target) {
+                                state = nextPath.indexOf("|" + target.id + "|") >= 0 ? "cycle" : "normal";
+                                stack.push({ fn:target, name:target.name, host:childHost, section:job.section, depth:job.depth + 1,
+                                    path:nextPath, ancestors:job.ancestors.concat([job.name]), state:state, isLast:i === calls.length - 1 });
+                            }
+                        }
+                    }
+                }
+            }
+            if (!quiet) { setProgress("호출 구조 전개", Math.min(processed, analysis.functions.length), analysis.functions.length, rootIndex + "/" + roots.length + " 시작점"); }
+            window.setTimeout(tick, 1);
+        }
+        window.setTimeout(tick, 1);
+    }
+
+    function renderAllAsync(token, quiet, done) {
+        function renderCalls() {
+            renderCallTreeAsync(token, quiet, function () {
+                var i;
+                if (selectedSignature && analysis) {
+                    for (i = 0; i < analysis.functions.length; i += 1) {
+                        if (functionSignature(analysis.functions[i]) === selectedSignature) { showFunction(analysis.functions[i]); break; }
+                    }
+                }
+                done();
+            });
+        }
+        if (byId("showFunctionPane").checked) { renderFunctionTreeAsync(token, quiet, renderCalls); }
+        else { clearElement(byId("functionTree")); renderCalls(); }
+    }
+
+    function exportExcel() {
+        if (!analysis || !analysis.functions.length) { return; }
+        var path = rootPath + "\\C_코드_트리_" + timestamp() + ".xlsx";
+        var mainRoot = selectedMainFunction();
+        try {
+            ExcelTreeExporter.exportWorkbook(analysis, path, mainRoot ? mainRoot.id : "", byId("showOtherRoots").checked);
+            setStatus("Excel 저장 완료: " + path, true);
+        } catch (e) {
+            setStatus("Excel 출력 실패: Microsoft Excel 설치 여부와 파일 권한을 확인하세요. (" + e.message + ")", false);
+        }
+    }
+
+    function init() {
+        window.resizeTo(Math.min(1500, screen.availWidth), Math.min(900, screen.availHeight));
+        byId("folderButton").onclick = chooseFolder;
+        byId("checkButton").onclick = function () { checkChanges(true); };
+        byId("excelButton").onclick = exportExcel;
+        byId("searchBox").onkeyup = function () {
+            var token;
+            if (!analysis || busy) { return; }
+            token = ++operationToken; setBusy(true);
+            setStatus("호출 트리 검색 결과 구성 중…", false);
+            renderAllAsync(token, true, function () { setBusy(false); setStatus("검색 결과 표시: " + byId("searchBox").value, false); });
+        };
+        byId("autoRefresh").onclick = function () {
+            setStatus(this.checked ? "자동 감시 사용: 2초마다 수정 날짜만 확인합니다." : "자동 감시가 일시 중지되었습니다.", false);
+        };
+        byId("viewButton").onclick = function () {
+            byId("viewMenu").style.display = byId("viewMenu").style.display === "block" ? "none" : "block";
+            window.event.cancelBubble = true;
+        };
+        byId("viewMenu").onclick = function () { window.event.cancelBubble = true; };
+        byId("showFunctionPane").onclick = function () {
+            var token;
+            applyViewLayout();
+            if (analysis && !busy) {
+                token = ++operationToken; setBusy(true);
+                renderAllAsync(token, true, function () { setBusy(false); });
+            }
+        };
+        byId("showSourcePane").onclick = applyViewLayout;
+        byId("showOtherRoots").onclick = function () {
+            var token;
+            if (!analysis || busy) { return; }
+            token = ++operationToken; setBusy(true);
+            setStatus(this.checked ? "기타 미호출 루트를 추가하는 중…" : "메인/인터럽트 트리만 다시 구성 중…", false);
+            renderAllAsync(token, true, function () { setBusy(false); setStatus("호출 트리 보기 옵션 적용 완료", true); });
+        };
+        byId("mainRootSelect").onchange = function () {
+            var token;
+            if (!analysis || busy) { return; }
+            selectedMainSignature = this.value;
+            token = ++operationToken; setBusy(true);
+            setStatus("선택한 메인 루트에서 호출 구조를 다시 전개합니다.", false);
+            renderAllAsync(token, true, function () { setBusy(false); setStatus("메인 루트 변경 완료", true); });
+        };
+        byId("callTree").onscroll = scheduleStickyHeader;
+        document.onclick = function () { byId("viewMenu").style.display = "none"; };
+        applyViewLayout();
+        setProgressVisible(false);
+        startMonitor();
+    }
+    window.onload = init;
+}());
+</script>
+</head>
+<body>
+<div id="toolbar">
+    <button id="folderButton" class="primary">폴더 선택</button>
+    <button id="checkButton">지금 변경 확인</button>
+    <button id="excelButton" disabled>Excel 트리 출력</button>
+    <button id="viewButton">보기 ▾</button>
+    <label><input id="autoRefresh" type="checkbox" checked> 2초 자동 감시</label>
+    <label>검색 <input id="searchBox" type="text" placeholder="함수명 또는 파일명"></label>
+    <span id="rootPath">폴더를 선택하세요</span>
+    <label>메인 루트 <select id="mainRootSelect" disabled><option>폴더 분석 후 선택</option></select></label>
+    <span id="versionBadge">v2.3</span>
+    <div id="viewMenu">
+        <label><input id="showFunctionPane" type="checkbox"> 파일 / 함수 트리</label>
+        <label><input id="showSourcePane" type="checkbox"> 소스 미리보기</label>
+        <label><input id="showOtherRoots" type="checkbox"> 기타 미호출 루트 표시</label>
+    </div>
+</div>
+<div id="status">대기 중 — 폴더를 선택하면 .c/.h 파일만 분석합니다.</div>
+<div id="progressPanel"><span id="progressText">준비 — 폴더를 선택하세요.</span><span id="progressTrack"><span id="progressBar"></span></span></div>
+<div id="main">
+    <div id="functionPane" class="pane"><div class="paneInner">
+        <div class="paneHeader">파일 / 함수 트리</div><div id="functionTree" class="paneBody"><div class="empty">분석할 폴더를 선택하세요.</div></div>
+    </div></div>
+    <div id="callPane" class="pane"><div class="paneInner">
+        <div class="paneHeader">함수 호출 관계 트리</div>
+        <div id="callSticky"><div id="callStickyInner"><span class="stickyStage"><strong>1단계</strong>시작 함수</span></div></div>
+        <div id="callTree" class="paneBody"><div class="empty">호출 관계가 여기에 표시됩니다.</div></div>
+    </div></div>
+    <div id="sourcePane" class="pane last"><div class="paneInner">
+        <div class="paneHeader">소스 미리보기 <span id="sourceTitle"></span></div><div class="paneBody" style="padding:0"><pre id="source">함수를 선택하면 해당 코드와 줄 번호를 표시합니다.</pre></div>
+    </div></div>
+</div>
+</body>
+</html>
