@@ -24,7 +24,19 @@ if ($LASTEXITCODE -eq 0 -and $repositoryRoot) {
     $tagName = "v$appVersion"
     $existingTag = (& git -C $repositoryRoot tag --list $tagName)
     if ($existingTag) {
-        $projectRelative = [IO.Path]::GetRelativePath($repositoryRoot, $projectRoot).Replace("\", "/")
+        # GitHub Actions still invokes Windows PowerShell 5.1 here. Its .NET
+        # Framework does not provide Path.GetRelativePath(), so calculate the
+        # repository-relative path without that newer runtime API.
+        $repositoryRootPath = [IO.Path]::GetFullPath([string]$repositoryRoot).TrimEnd("\", "/")
+        $projectRootPath = [IO.Path]::GetFullPath([string]$projectRoot).TrimEnd("\", "/")
+        $repositoryPrefix = $repositoryRootPath + [IO.Path]::DirectorySeparatorChar
+        if (-not $projectRootPath.StartsWith(
+            $repositoryPrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "Project directory is outside the Git repository: $projectRootPath"
+        }
+        $projectRelative = $projectRootPath.Substring($repositoryPrefix.Length).Replace("\", "/")
         $trackedChanges = @(& git -C $repositoryRoot diff --name-only $tagName -- $projectRelative)
         $untrackedChanges = @(
             & git -C $repositoryRoot ls-files --others --exclude-standard -- $projectRelative
