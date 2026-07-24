@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from analyzer import AnalysisResult, AnalyzerSession, CallView, build_call_view
 from project_cache import ProjectCacheStore
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions
+from trace_ui import TraceCenterDialog
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
 from update_service import (
@@ -32,7 +33,7 @@ from update_service import (
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.1.19"
+APP_VERSION = "1.2.2"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 
@@ -319,6 +320,7 @@ class MainWindow(QMainWindow):
         self._pending_manual_check = False
         self._refresh_after_cache = False
         self._startup_update_checked = False
+        self.trace_center: TraceCenterDialog | None = None
         self._restoring_state = True
         self._cache_dirty = False
         self._cache_generation = 0
@@ -369,6 +371,12 @@ class MainWindow(QMainWindow):
         project_settings_action.setShortcut("Ctrl+,")
         project_settings_action.triggered.connect(self._open_project_settings)
         settings_menu.addAction(project_settings_action)
+
+        trace_menu = self.menuBar().addMenu("Trace")
+        trace_center_action = QAction("실행 구조 및 Trace 센터…", self)
+        trace_center_action.setShortcut("Ctrl+T")
+        trace_center_action.triggered.connect(self._open_trace_center)
+        trace_menu.addAction(trace_center_action)
 
         self.toolbar = QToolBar("주 도구", self)
         self.toolbar.setMovable(False)
@@ -799,10 +807,43 @@ class MainWindow(QMainWindow):
         database = "compile_commands.json 사용" if result.compile_database else "기본 C 옵션 사용"
         self.status_label.setText(
             f"완료: {len(result.files):,}개 파일 · {len(result.functions):,}개 함수 · "
-            f"최대 {view.max_depth}단계 · {clang_text} · {database}"
+            f"RTOS 시작점 {view.runtime_roots:,}개 · 최대 {view.max_depth}단계 · "
+            f"{clang_text} · {database}"
         )
         if mark_dirty:
             self._mark_cache_dirty()
+        if self.trace_center is not None:
+            self.trace_center.refresh(result)
+
+    def _open_trace_center(self) -> None:
+        if not self.result:
+            QMessageBox.information(self, "Trace 센터", "먼저 분석할 C 소스 폴더를 여십시오.")
+            return
+        if self.trace_center is None:
+            self.trace_center = TraceCenterDialog(self.result, self)
+            self.trace_center.functionActivated.connect(self._activate_runtime_function)
+            self.trace_center.sourcesChanged.connect(lambda: self._check_updates(False))
+            self.trace_center.finished.connect(self._trace_center_closed)
+        else:
+            self.trace_center.refresh(self.result)
+        self.trace_center.show()
+        self.trace_center.raise_()
+        self.trace_center.activateWindow()
+
+    def _trace_center_closed(self) -> None:
+        if self.trace_center is not None:
+            self.trace_center.deleteLater()
+            self.trace_center = None
+
+    def _activate_runtime_function(self, function_id: str) -> None:
+        if not self.result:
+            return
+        function = self.result.function(function_id)
+        if not function:
+            return
+        self._show_function(function_id)
+        self.search_edit.setText(function.name)
+        self._search_move(1, True)
 
     def _refresh_main_combo(self, view: CallView) -> None:
         current = view.selected_main_id
@@ -1038,11 +1079,13 @@ class MainWindow(QMainWindow):
         if not self.result:
             return
         for parsed in self.result.files:
+            if not parsed.functions:
+                continue
             item = QTreeWidgetItem([parsed.relative_path])
             item.setData(0, Qt.UserRole, parsed.path)
             item.setData(0, Qt.UserRole + 1, parsed.relative_path)
             item.setToolTip(0, parsed.path)
-            item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator if parsed.functions else QTreeWidgetItem.DontShowIndicator)
+            item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
             self.file_tree.addTopLevelItem(item)
         self._refresh_file_tree_paths()
 

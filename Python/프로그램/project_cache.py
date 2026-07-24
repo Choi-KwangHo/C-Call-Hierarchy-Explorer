@@ -11,7 +11,7 @@ from PySide6.QtCore import QStandardPaths
 
 # Increment when parsed C semantics change so stale function boundaries are
 # never restored after an analyzer fix.
-CACHE_FORMAT = 2
+CACHE_FORMAT = 3
 
 
 def _normalized_root(root: str) -> str:

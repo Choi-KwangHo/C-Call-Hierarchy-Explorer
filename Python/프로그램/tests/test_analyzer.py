@@ -29,6 +29,23 @@ class AnalyzerTests(unittest.TestCase):
             self.assertEqual((changed, deleted), (1, 0))
             self.assertEqual(len(result.functions), original_count + 1)
 
+    def test_function_declaration_excludes_line_and_block_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "comments.c").write_text(
+                "void first(void) // 설명 주석\n"
+                "{\n}\n"
+                "static int second(int value) /* 구현 주석 */\n"
+                "{\n    return value;\n}\n",
+                encoding="utf-8",
+            )
+            result = AnalyzerSession().initial_scan(str(root))
+            self.assertEqual(result.by_name["first"][0].declaration, "void first(void)")
+            self.assertEqual(
+                result.by_name["second"][0].declaration,
+                "static int second(int value)",
+            )
+
     def test_external_calls_can_be_hidden_without_removing_resolved_calls(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -192,7 +209,7 @@ class AnalyzerTests(unittest.TestCase):
                 "#define INIT_NAMBUF(fs) { int scratch = 0; }\n"
                 "#endif\n"
                 "/* Initialize allocation state. */\n"
-                "static int init_alloc_info(void)\n"
+                "static int init_alloc_info(void) // allocation helper\n"
                 "{\n"
                 "    return 1;\n"
                 "}\n"
@@ -210,6 +227,7 @@ class AnalyzerTests(unittest.TestCase):
             self.assertEqual(function.declaration, "static int init_alloc_info(void)")
             self.assertNotIn("#if", function.declaration)
             self.assertNotIn("Initialize allocation", function.declaration)
+            self.assertNotIn("allocation helper", function.declaration)
             self.assertGreater(function.end_line, function.start_line)
 
 

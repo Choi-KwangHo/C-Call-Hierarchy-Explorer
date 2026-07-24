@@ -20,7 +20,7 @@ CONTROL_WORDS = {
     "else", "typedef", "defined", "alignof", "_Alignof", "_Generic",
     "_Static_assert", "__attribute__", "__declspec",
 }
-EXCLUDED_DIRS = {".git", ".svn", ".hg", "node_modules", "dist", "build", ".vs"}
+EXCLUDED_DIRS = {".git", ".svn", ".hg", "node_modules", "dist", "build", ".vs", "cch_trace"}
 FUNCTION_RE = re.compile(r"([A-Za-z_]\w*)\s*\((?:[^;{}()]|\([^()]*\))*\)\s*\{")
 CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 FUNCTION_MACRO_RE = re.compile(
@@ -106,6 +106,7 @@ class CallView:
     main_candidates: list[FunctionDef]
     selected_main_id: str | None
     interrupt_roots: int
+    runtime_roots: int = 0
 
 
 def _norm(path: str) -> str:
@@ -251,6 +252,11 @@ def _compact(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _clean_declaration(text: str) -> str:
+    """Return a compact C declaration without line or block comments."""
+    return _compact(mask_non_code(text))
+
+
 def read_source(path: Path) -> str:
     raw = path.read_bytes()
     for encoding in ("utf-8-sig", "cp949", "utf-16", "latin-1"):
@@ -390,7 +396,7 @@ def _parse_large_file_linear(path: str, root: str, text: str, modified_ns: int, 
             name=name,
             path=path,
             file=Path(path).name,
-            declaration=_compact(text[declaration_start:body_start]),
+            declaration=_clean_declaration(text[declaration_start:body_start]),
             parameters=text[open_parenthesis + 1:close_parenthesis].strip() if close_parenthesis >= 0 else "",
             start_index=match.start(1),
             body_start=body_start,
@@ -454,7 +460,9 @@ def parse_file(
         open_parenthesis = declarator_text.find("(", name_match.start(1) + len(name))
         close_parenthesis = _find_matching(declarator_text, open_parenthesis, "(", ")")
         parameters = declarator_text[open_parenthesis + 1:close_parenthesis] if close_parenthesis >= 0 else ""
-        declaration = _compact(source_bytes[node_start:body_start].decode("utf-8", errors="replace"))
+        declaration = _clean_declaration(
+            source_bytes[node_start:body_start].decode("utf-8", errors="replace")
+        )
         function_id = f"{_norm(path)}|{name}|{node_start}"
         functions.append(FunctionDef(
             id=function_id,
@@ -855,6 +863,26 @@ def build_call_view(
     main_reachable: set[str] = set()
     if selected_main:
         _mark_reachable(result, selected_main, main_reachable)
+    try:
+        from runtime_model import build_runtime_objects
+
+        runtime_roots = []
+        runtime_ids: set[str] = set()
+        for runtime_object in build_runtime_objects(result):
+            if runtime_object.kind not in {"task", "timer"} or not runtime_object.function_id:
+                continue
+            function = result.function(runtime_object.function_id)
+            if (
+                function is not None
+                and function.id not in runtime_ids
+                and function.id != (selected_main.id if selected_main else None)
+                and _belongs_to_project(function, selected_main)
+                and not _is_library_or_generated(function)
+            ):
+                runtime_roots.append(function)
+                runtime_ids.add(function.id)
+    except (ImportError, AttributeError, TypeError):
+        runtime_roots = []
     interrupt_roots = [
         fn for fn in result.functions
         if not is_main_entry(fn)
@@ -865,10 +893,13 @@ def build_call_view(
     ]
     groups: list[tuple[str, str, list[FunctionDef]]] = [
         ("MAIN LOOP 시작점", "main", [selected_main] if selected_main else []),
+        ("RTOS Task / Timer 시작점", "runtime", runtime_roots),
         ("인터럽트 / ISR 독립 시작점", "interrupt", interrupt_roots),
         ("확실한 기타 독립 시작점", "independent", []),
     ]
     marked: set[str] = set(main_reachable)
+    for function in runtime_roots:
+        _mark_reachable(result, function, marked)
     for function in interrupt_roots:
         _mark_reachable(result, function, marked)
     if include_other_roots:
@@ -879,7 +910,7 @@ def build_call_view(
                 and _belongs_to_project(function, selected_main)
                 and _is_probable_independent_entry(function)
             ):
-                groups[2][2].append(function)
+                groups[-1][2].append(function)
                 _mark_reachable(result, function, marked)
     query = search.strip().lower()
     if query:
@@ -892,7 +923,8 @@ def build_call_view(
 
     rows: list[ViewRow] = []
     max_depth = 1
-    interrupt_count = len(groups[1][2]) if len(groups) > 1 else 0
+    interrupt_count = sum(len(roots) for _, kind, roots in groups if kind == "interrupt")
+    runtime_count = sum(len(roots) for _, kind, roots in groups if kind == "runtime")
 
     for title, group_type, roots in groups:
         for root in roots:
@@ -972,6 +1004,7 @@ def build_call_view(
         main_candidates=candidates,
         selected_main_id=selected_main.id if selected_main else None,
         interrupt_roots=interrupt_count,
+        runtime_roots=runtime_count,
     )
 
 

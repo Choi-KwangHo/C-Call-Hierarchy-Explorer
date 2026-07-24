@@ -90,8 +90,37 @@ if (-not $versionMatch.Success) {
 }
 $currentVersion = $versionMatch.Groups["version"].Value
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $Version = $currentVersion
-    Write-Host "Using app.py release version $Version"
+    $usedVersions = @(
+        foreach ($localTag in @(git tag --list "v*")) {
+            if ($localTag -match '^v(?<version>\d+\.\d+\.\d+)$') {
+                [version]$Matches["version"]
+            }
+        }
+        $remoteVersionLines = @(git ls-remote --tags origin "refs/tags/v*")
+        if ($LASTEXITCODE -ne 0) {
+            throw "원격 저장소의 버전 태그를 확인하지 못했습니다."
+        }
+        foreach ($line in $remoteVersionLines) {
+            if ($line -match 'refs/tags/v(?<version>\d+\.\d+\.\d+)$') {
+                [version]$Matches["version"]
+            }
+        }
+    )
+    $currentSemanticVersion = [version]$currentVersion
+    $currentVersionUsed = $usedVersions | Where-Object { $_ -eq $currentSemanticVersion }
+    if ($currentVersionUsed) {
+        $pendingChanges = @(git status --porcelain --untracked-files=normal)
+        if ($pendingChanges.Count -eq 0) {
+            throw "v$currentVersion 이후 변경 사항이 없어 새 버전을 생성할 필요가 없습니다."
+        }
+        $latestUsedVersion = $usedVersions | Sort-Object -Descending | Select-Object -First 1
+        $nextPatch = $latestUsedVersion.Build + 1
+        $Version = "$($latestUsedVersion.Major).$($latestUsedVersion.Minor).$nextPatch"
+        Write-Host "현재 소스 버전 v$currentVersion 태그가 이미 사용되어 다음 버전 v$Version 을 자동 선택했습니다."
+    } else {
+        $Version = $currentVersion
+        Write-Host "app.py의 미사용 버전 v$Version 을 배포 버전으로 사용합니다."
+    }
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Release version must use the major.minor.patch format."

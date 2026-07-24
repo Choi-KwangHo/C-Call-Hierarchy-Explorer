@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "C Call Hierarchy Explorer"
-$appVersion = "1.1.19"
+$appVersion = "1.2.2"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -18,6 +18,25 @@ $portableName = "C-Call-Hierarchy-Explorer-Portable-$appVersion.exe"
 $portableExe = Join-Path $releaseDir $portableName
 $setupName = "C-Call-Hierarchy-Explorer-Setup-$appVersion.exe"
 $setupExe = Join-Path $releaseDir $setupName
+
+$repositoryRoot = (& git -C $projectRoot rev-parse --show-toplevel 2>$null)
+if ($LASTEXITCODE -eq 0 -and $repositoryRoot) {
+    $tagName = "v$appVersion"
+    $existingTag = (& git -C $repositoryRoot tag --list $tagName)
+    if ($existingTag) {
+        $projectRelative = [IO.Path]::GetRelativePath($repositoryRoot, $projectRoot).Replace("\", "/")
+        $trackedChanges = @(& git -C $repositoryRoot diff --name-only $tagName -- $projectRelative)
+        $untrackedChanges = @(
+            & git -C $repositoryRoot ls-files --others --exclude-standard -- $projectRelative
+        )
+        if ($trackedChanges.Count -gt 0 -or $untrackedChanges.Count -gt 0) {
+            throw (
+                "버전 $appVersion 태그가 이미 존재하지만 태그 이후 프로그램 소스가 변경되었습니다. " +
+                "새 패치 버전으로 갱신한 뒤 빌드하십시오."
+            )
+        }
+    }
+}
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Python virtual environment was not found: $python"

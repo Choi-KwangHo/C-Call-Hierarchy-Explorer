@@ -170,18 +170,34 @@ def export_xlsx(
             )
 
     function_rows: list[list[tuple[object, int]]] = [[
-        ("함수", 1), ("파일", 1), ("시작 행", 1), ("종료 행", 1),
+        ("파일", 1), ("함수", 1), ("시작 행", 1), ("종료 행", 1),
         ("함수 행 수", 1), ("선언", 1), ("호출 수", 1), ("호출자 수", 1),
     ]]
-    for function in sorted(result.functions, key=lambda item: (item.path.lower(), item.start_line)):
+    function_merges: list[str] = []
+    sorted_functions = sorted(
+        result.functions,
+        key=lambda item: (item.file.casefold(), item.path.casefold(), item.start_line),
+    )
+    group_start = 0
+    previous_file_key = ""
+    for index, function in enumerate(sorted_functions):
+        file_key = function.file.casefold()
+        if file_key != previous_file_key:
+            if index - group_start > 1:
+                function_merges.append(f"A{group_start + 2}:A{index + 1}")
+            group_start = index
+            previous_file_key = file_key
         function_rows.append([
-            (function.name, 0), (function.path, 0), (function.start_line, 0),
+            (function.file if index == group_start else "", 7 if index == group_start else 0),
+            (function.name, 0), (function.start_line, 0),
             (function.end_line, 0), (function.end_line - function.start_line + 1, 0),
             (function.declaration, 0),
             (len(function.calls), 0), (len(function.callers), 0),
         ])
         completed += 1
         report("함수 목록 행 준비")
+    if len(sorted_functions) - group_start > 1:
+        function_merges.append(f"A{group_start + 2}:A{len(sorted_functions) + 1}")
 
     content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -211,13 +227,17 @@ def export_xlsx(
 <fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD7E5EF"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF0D5"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF8FBFD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDF4F8"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2E6E9"/></patternFill></fill></fills>
 <borders count="2"><border/><border><left style="thin"><color rgb="FFBDCBD6"/></left><right style="thin"><color rgb="FFBDCBD6"/></right><top style="thin"><color rgb="FFBDCBD6"/></top><bottom style="thin"><color rgb="FFBDCBD6"/></bottom></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFill="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1"/></cellXfs>
+<cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFill="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="center"/></xf></cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'''
 
     sheet1 = _sheet(call_rows, [28] * depth_count + [18, 32, 10], merges=call_merges)
     completed += 1
     report("호출 관계 시트 생성", True)
-    sheet2 = _sheet(function_rows, [28, 70, 12, 12, 14, 80, 12, 12])
+    sheet2 = _sheet(
+        function_rows,
+        [32, 28, 12, 12, 14, 80, 12, 12],
+        merges=function_merges,
+    )
     completed += 1
     report("함수 목록 시트 생성", True)
     try:

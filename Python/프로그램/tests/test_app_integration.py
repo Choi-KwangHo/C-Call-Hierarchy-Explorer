@@ -50,6 +50,7 @@ class AppIntegrationTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "main.c"
             source.write_text("void Watchdog_Task(void){}\nint main(void){Watchdog_Task();}\n", encoding="utf-8")
+            (root / "empty.h").write_text("#define PROJECT_VALUE 1\n", encoding="utf-8")
             window = MainWindow()
             window.file_action.setChecked(True)
             window.source_action.setChecked(True)
@@ -61,6 +62,11 @@ class AppIntegrationTests(unittest.TestCase):
             window.auto_check.setChecked(False)
             window._open_folder(str(root))
             self._wait(window)
+            self.assertEqual(window.file_tree.topLevelItemCount(), 1)
+            self.assertEqual(
+                Path(window.file_tree.topLevelItem(0).data(0, Qt.UserRole)).name,
+                "main.c",
+            )
             self.assertEqual(len(window.result.by_name["main"][0].calls), 1)
             window.search_edit.setText("Watchdog_Task")
             window._search_move(1, True)
@@ -125,6 +131,35 @@ class AppIntegrationTests(unittest.TestCase):
             (root / "tree_1.xlsx").touch()
             self.assertEqual(unique_output_path(original).name, "tree_2.xlsx")
 
+    def test_trace_center_lists_registered_rtos_task_without_editing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "main.c"
+            original = (
+                "void CommTask(void *argument){for(;;){}}\n"
+                "int main(void){xTaskCreate(CommTask,\"COMM\",512,0,3,0);return 0;}\n"
+            )
+            source.write_text(original, encoding="utf-8")
+            window = MainWindow()
+            window.auto_check.setChecked(False)
+            window._open_folder(str(root))
+            self._wait(window)
+            window._open_trace_center()
+            self.app.processEvents()
+            self.assertIsNotNone(window.trace_center)
+            task_groups = window.trace_center.object_tree.findItems(
+                "FreeRTOS / RTOS Task",
+                Qt.MatchExactly | Qt.MatchRecursive,
+                0,
+            )
+            self.assertEqual(len(task_groups), 1)
+            self.assertEqual(task_groups[0].child(0).text(0), "CommTask")
+            self.assertEqual(source.read_text(encoding="utf-8"), original)
+            self.assertFalse((root / ".cch-trace.json").exists())
+            window.trace_center.accept()
+            self.app.processEvents()
+            window.close()
+
     def test_update_installer_waits_for_current_process_and_can_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             installer = Path(temporary) / "setup.exe"
@@ -173,8 +208,8 @@ class AppIntegrationTests(unittest.TestCase):
     def test_startup_cleanup_removes_only_inactive_version_folders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "CCallHierarchyExplorer"
-            current = root / "app-1.1.19-current"
-            old = root / "app-1.1.19-old"
+            current = root / "app-1.1.20-current"
+            old = root / "app-1.1.20-old"
             unrelated = root / "user-data"
             for directory in (current, old, unrelated):
                 directory.mkdir(parents=True)
@@ -205,7 +240,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.1.19")
+        self.assertEqual(APP_VERSION, "1.2.2")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:

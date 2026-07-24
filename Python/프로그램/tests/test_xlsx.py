@@ -48,8 +48,15 @@ class ExcelTests(unittest.TestCase):
                 strings = [node.text or "" for node in sheet2.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")]
                 self.assertLessEqual(max(map(len, strings)), 32_000)
                 self.assertIn("함수 행 수", strings)
+                self.assertEqual(
+                    strings[:8],
+                    ["파일", "함수", "시작 행", "종료 행", "함수 행 수", "선언", "호출 수", "호출자 수"],
+                )
                 function_sheet = archive.read("xl/worksheets/sheet2.xml").decode("utf-8")
                 self.assertIn('<c r="E2" s="0"><v>1</v></c>', function_sheet)
+                self.assertIn('mergeCell ref="A2:A6"', function_sheet)
+                self.assertIn("main.c", function_sheet)
+                self.assertNotIn(str(root), function_sheet)
 
 
 if __name__ == "__main__":
