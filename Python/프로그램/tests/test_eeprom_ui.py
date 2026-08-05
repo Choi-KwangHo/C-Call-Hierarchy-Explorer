@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,7 +14,10 @@ from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from eeprom_cache import EepromResultCacheStore  # noqa: E402
-from eeprom_map import EepromMapResult, EepromRegion, EepromSourceConfig, save_source_configs  # noqa: E402
+from eeprom_map import (  # noqa: E402
+    AnalysisCancelled, EepromMapResult, EepromRegion, EepromSourceConfig,
+    save_source_configs,
+)
 from eeprom_ui import EepromMapDialog, EepromSourceSettingsDialog  # noqa: E402
 
 
@@ -80,6 +85,11 @@ class EepromUiTests(unittest.TestCase):
                     break
             self.assertIn("정의된 구조체 없음", dialog.structure_caption.text())
             self.assertIn("정의된 구조체 없음", dialog.code_preview.toPlainText())
+            self.assertIn("EEPROM_Read", dialog.code_preview.toPlainText())
+            self.assertTrue(dialog.code_preview.extraSelections())
+            self.assertIn("선택 영역 판단 근거", dialog.warning_view.toPlainText())
+            self.assertEqual(dialog.progress.minimumHeight(), 4)
+            self.assertEqual(dialog.progress.maximumHeight(), 4)
             dialog._toggle_fullscreen()
             self.assertTrue(dialog.isFullScreen())
             dialog._toggle_fullscreen()
@@ -111,6 +121,69 @@ class EepromUiTests(unittest.TestCase):
                 "capacity": 8192, "page_size": 64,
             })
             self.assertIsNone(store.load(changed))
+
+    def test_switching_source_cancels_old_transaction_and_clears_stale_view(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_root = root / "first"
+            second_root = root / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            settings = QSettings(str(root / "settings.ini"), QSettings.IniFormat)
+            first = EepromSourceConfig.create(
+                "First", source_type="local", repository_url=str(first_root), auto_refresh=False,
+            )
+            second = EepromSourceConfig.create(
+                "Second", source_type="local", repository_url=str(second_root), auto_refresh=False,
+            )
+            save_source_configs(settings, [first, second])
+            first_started = threading.Event()
+            second_started = threading.Event()
+            release_second = threading.Event()
+
+            def fake_analyze(config, current_root, cache_root, progress=None, cancelled=None):
+                if config.id == first.id:
+                    first_started.set()
+                    while not cancelled():
+                        time.sleep(0.01)
+                    raise AnalysisCancelled("cancelled")
+                second_started.set()
+                while not release_second.is_set():
+                    if cancelled():
+                        raise AnalysisCancelled("cancelled")
+                    time.sleep(0.01)
+                return EepromMapResult(
+                    config=config, source_root=str(second_root), commit="second-revision",
+                    regions=[], structures=[], used_bytes=0,
+                )
+
+            with patch("eeprom_ui.analyze_eeprom_source", side_effect=fake_analyze):
+                dialog = EepromMapDialog(settings, "")
+                dialog.show()
+                deadline = time.monotonic() + 3
+                while not first_started.is_set() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(0.01)
+                self.assertTrue(first_started.is_set())
+                dialog.source_combo.setCurrentIndex(1)
+                self.app.processEvents()
+                self.assertEqual(dialog.region_table.rowCount(), 0)
+                self.assertEqual(dialog.structure_table.rowCount(), 0)
+                self.assertIn("Second", dialog.code_preview.toPlainText())
+                deadline = time.monotonic() + 3
+                while not second_started.is_set() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(0.01)
+                self.assertTrue(second_started.is_set())
+                release_second.set()
+                deadline = time.monotonic() + 3
+                while dialog.worker is not None and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(0.01)
+                self.assertNotIn(first.id, dialog.results)
+                self.assertIn(second.id, dialog.results)
+                self.assertEqual(dialog._displayed_result.config.id, second.id)
+                dialog.close()
 
 
 if __name__ == "__main__":

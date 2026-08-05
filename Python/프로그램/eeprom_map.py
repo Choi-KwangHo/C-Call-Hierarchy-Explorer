@@ -88,6 +88,14 @@ class StructInfo:
 
 
 @dataclass(slots=True)
+class EepromEvidence:
+    kind: str
+    path: str
+    line: int
+    code: str
+
+
+@dataclass(slots=True)
 class EepromRegion:
     name: str
     address: int
@@ -106,6 +114,7 @@ class EepromRegion:
     actual_usage: bool = True
     conflict: bool = False
     out_of_range: bool = False
+    evidence_items: list[EepromEvidence] = field(default_factory=list)
 
     @property
     def end_address(self) -> int:
@@ -221,28 +230,62 @@ def parse_github_location(repository_url: str, configured_branch: str) -> tuple[
     return f"https://github.com/{owner}/{repository}.git", branch, subpath
 
 
-def _run_git(arguments: list[str], cwd: Path | None = None, timeout: int = 120) -> str:
+class AnalysisCancelled(RuntimeError):
+    pass
+
+
+def _check_cancel(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled and cancelled():
+        raise AnalysisCancelled("분석이 취소되었습니다.")
+
+
+def _run_git(
+    arguments: list[str], cwd: Path | None = None, timeout: int = 120,
+    cancelled: Callable[[], bool] | None = None,
+) -> str:
     environment = os.environ.copy()
     environment["GIT_TERMINAL_PROMPT"] = "0"
     startup = subprocess.STARTUPINFO() if os.name == "nt" else None
     if startup is not None:
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    process = subprocess.run(
+    process = subprocess.Popen(
         ["git", *arguments], cwd=str(cwd) if cwd else None, env=environment,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-        errors="replace", timeout=timeout, startupinfo=startup,
+        errors="replace", startupinfo=startup,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=0.1)
+            break
+        except subprocess.TimeoutExpired:
+            if cancelled and cancelled():
+                process.terminate()
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise AnalysisCancelled("Git 동기화가 취소되었습니다.")
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.communicate()
+                raise subprocess.TimeoutExpired(["git", *arguments], timeout)
     if process.returncode:
-        detail = (process.stderr or process.stdout).strip()
+        detail = (stderr or stdout).strip()
         raise RuntimeError(f"Git 명령 실패: {detail or process.returncode}")
-    return process.stdout.strip()
+    return stdout.strip()
 
 
-def _local_source_revision(root: Path) -> str:
+def _local_source_revision(
+    root: Path, cancelled: Callable[[], bool] | None = None,
+) -> str:
     """Create a cheap revision from C source metadata without reading every file."""
     digest = hashlib.sha256()
     for path in sorted(_source_files(root), key=lambda item: str(item).casefold()):
+        _check_cancel(cancelled)
         try:
             stat = path.stat()
             relative = path.relative_to(root)
@@ -258,8 +301,10 @@ def synchronize_source(
     current_root: str,
     cache_root: str | Path,
     progress: Callable[[int, int, str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[Path, str]:
     notify = progress or (lambda *_: None)
+    _check_cancel(cancelled)
     clone_url, branch, url_subpath = parse_github_location(config.repository_url, config.branch)
     local_source = not clone_url or Path(clone_url).is_dir()
     if not clone_url:
@@ -277,35 +322,47 @@ def synchronize_source(
         root = cache / identity
         notify(0, 3, f"{config.display_name}: GitHub 브랜치 동기화 중…")
         if (root / ".git").is_dir():
-            _run_git(["-C", str(root), "fetch", "--depth", "1", "origin", branch])
-            _run_git(["-C", str(root), "checkout", "--detach", "FETCH_HEAD"])
+            _run_git(["-C", str(root), "fetch", "--depth", "1", "origin", branch], cancelled=cancelled)
+            _check_cancel(cancelled)
+            _run_git(["-C", str(root), "checkout", "--detach", "FETCH_HEAD"], cancelled=cancelled)
         else:
             temporary = Path(tempfile.mkdtemp(prefix=f"{identity}-", dir=str(cache)))
             try:
-                _run_git(["clone", "--depth", "1", "--branch", branch, "--single-branch", clone_url, str(temporary)])
+                _run_git(
+                    ["clone", "--depth", "1", "--branch", branch, "--single-branch", clone_url, str(temporary)],
+                    cancelled=cancelled,
+                )
+                _check_cancel(cancelled)
                 if root.exists():
                     shutil.rmtree(root)
                 temporary.replace(root)
             except Exception:
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
-        commit = _run_git(["-C", str(root), "rev-parse", "HEAD"], timeout=15)
+        commit = _run_git(["-C", str(root), "rev-parse", "HEAD"], timeout=15, cancelled=cancelled)
+    _check_cancel(cancelled)
     if local_source:
-        commit = _local_source_revision(root)
+        commit = _local_source_revision(root, cancelled)
     notify(1, 3, f"{config.display_name}: C 소스 검색 중…")
     return root, commit
 
 
-def source_revision(config: EepromSourceConfig, current_root: str) -> str:
+def source_revision(
+    config: EepromSourceConfig, current_root: str,
+    cancelled: Callable[[], bool] | None = None,
+) -> str:
     """Return the current source revision without modifying the cached checkout."""
     clone_url, branch, _ = parse_github_location(config.repository_url, config.branch)
     if not clone_url:
         root = Path(current_root).resolve()
-        return _local_source_revision(root)
+        return _local_source_revision(root, cancelled)
     if Path(clone_url).is_dir():
         root = Path(clone_url).resolve()
-        return _local_source_revision(root)
-    output = _run_git(["ls-remote", clone_url, f"refs/heads/{branch}"], timeout=30)
+        return _local_source_revision(root, cancelled)
+    _check_cancel(cancelled)
+    output = _run_git(
+        ["ls-remote", clone_url, f"refs/heads/{branch}"], timeout=30, cancelled=cancelled,
+    )
     revision = output.split(None, 1)[0] if output else ""
     if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
         raise RuntimeError(f"원격 브랜치를 찾을 수 없습니다: {branch}")
@@ -706,6 +763,7 @@ def _infer_regions(
     sources: list[tuple[Path, str]], config: EepromSourceConfig,
     expressions: dict[str, str], macro_values: dict[str, int],
     origins: dict[str, tuple[Path, int]], structures: list[StructInfo],
+    cancelled: Callable[[], bool] | None = None,
 ) -> list[EepromRegion]:
     structure_map = {item.name: item for item in structures}
     regions: list[EepromRegion] = []
@@ -716,7 +774,16 @@ def _infer_regions(
         r"\b(?:extern\s+|static\s+|volatile\s+|const\s+)*([A-Za-z_]\w*)\s+"
         r"([A-Za-z_]\w*)\s*(?:\[\s*([^\]]+)\s*\])?\s*[;=]"
     )
+    source_lines = {str(path): source.splitlines() for path, source in sources}
+
+    def evidence_item(kind: str, path: Path | str, line: int) -> EepromEvidence:
+        path_text = str(path)
+        lines = source_lines.get(path_text, [])
+        code = lines[line - 1].strip() if 0 < line <= len(lines) else ""
+        return EepromEvidence(kind, path_text, line, code)
+
     for _, source in sources:
+        _check_cancel(cancelled)
         masked_source = _mask_comments_and_strings(source)
         for match in declaration_pattern.finditer(masked_source):
             type_name, variable = match.group(1), match.group(2)
@@ -728,6 +795,7 @@ def _infer_regions(
             global_variable_types[variable] = type_name if type_name in structure_map else ""
             global_variable_sizes[variable] = known_sizes[type_name] * count
     for path, source in sources:
+        _check_cancel(cancelled)
         masked = _mask_comments_and_strings(source)
         variable_types = dict(global_variable_types)
         variable_sizes = dict(global_variable_sizes)
@@ -844,6 +912,10 @@ def _infer_regions(
             size = config.page_size if wrapper_uses_full_page else payload_size
             access = "쓰기" if any(word in lowered for word in ("write", "save", "store", "program")) else "읽기" if any(word in lowered for word in ("read", "load", "get")) else "접근"
             line = source.count("\n", 0, start) + 1
+            evidence_items = [evidence_item(access, path, line)]
+            if address_name in origins:
+                origin_path, origin_line = origins[address_name]
+                evidence_items.insert(0, evidence_item("주소 정의", origin_path, origin_line))
             regions.append(EepromRegion(
                 address_name or function, address, size, address // config.page_size,
                 struct_name, str(path), [line], access,
@@ -852,6 +924,7 @@ def _infer_regions(
                 payload_size,
                 definition_present=address_name in origins,
                 actual_usage=True,
+                evidence_items=evidence_items,
             ))
 
     # Address/page macros not referenced by a recognizable driver call still
@@ -859,6 +932,7 @@ def _infer_regions(
     # lower-confidence records instead of silently losing the allocation.
     used_symbols = {region.name for region in regions}
     for name, value in macro_values.items():
+        _check_cancel(cancelled)
         upper = name.upper()
         layout_macro = bool(
             re.search(r"EEPROM.*(?:ADDR_)?PAGE\d+$", upper)
@@ -901,6 +975,7 @@ def _infer_regions(
             name, address, size, address // config.page_size, struct_name,
             str(origin), [line], "정의", "낮음", "주소/페이지 매크로에서 추정",
             size, "정의만 존재", False, True, False,
+            evidence_items=[evidence_item("주소 정의", origin, line)],
         ))
 
     merged: dict[tuple[int, int, str, bool], EepromRegion] = {}
@@ -913,6 +988,14 @@ def _infer_regions(
                 existing.access = f"{existing.access}/{region.access}"
             existing.definition_present = existing.definition_present or region.definition_present
             existing.actual_usage = existing.actual_usage or region.actual_usage
+            known_evidence = {
+                (item.kind, item.path.casefold(), item.line, item.code)
+                for item in existing.evidence_items
+            }
+            existing.evidence_items.extend(
+                item for item in region.evidence_items
+                if (item.kind, item.path.casefold(), item.line, item.code) not in known_evidence
+            )
         else:
             merged[key] = region
     return sorted(merged.values(), key=lambda item: (item.address, item.size, item.name.casefold()))
@@ -975,20 +1058,28 @@ def analyze_eeprom_source(
     current_root: str,
     cache_root: str | Path,
     progress: Callable[[int, int, str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> EepromMapResult:
     notify = progress or (lambda *_: None)
-    root, commit = synchronize_source(config, current_root, cache_root, notify)
+    _check_cancel(cancelled)
+    root, commit = synchronize_source(config, current_root, cache_root, notify, cancelled)
+    _check_cancel(cancelled)
     paths = _source_files(root)
     sources: list[tuple[Path, str]] = []
     total = max(1, len(paths))
     for index, path in enumerate(paths, 1):
+        _check_cancel(cancelled)
         sources.append((path, _read_source(path)))
         if index == total or index % 50 == 0:
             notify(index, total, f"{config.display_name}: {index:,}/{total:,}개 파일 읽는 중…")
     expressions, macro_values, origins = _collect_macros(sources)
+    _check_cancel(cancelled)
     notify(2, 3, f"{config.display_name}: 구조체와 EEPROM 영역 연결 중…")
     structures = _parse_structures(sources, macro_values)
-    regions = _infer_regions(sources, config, expressions, macro_values, origins, structures)
+    regions = _infer_regions(
+        sources, config, expressions, macro_values, origins, structures, cancelled,
+    )
+    _check_cancel(cancelled)
     warnings, used = _apply_region_status(regions, config.capacity)
     related_names = {
         item.struct_name for item in regions if item.struct_name

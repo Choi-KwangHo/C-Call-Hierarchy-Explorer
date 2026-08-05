@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import html
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, QStandardPaths, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QPainter, QPen, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtGui import (
+    QCloseEvent, QColor, QFont, QPainter, QPen, QSyntaxHighlighter,
+    QTextCharFormat, QTextCursor, QTextFormat,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QFileDialog, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
-    QScrollArea, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 from eeprom_map import (
-    AT24C128_CAPACITY, AT24C128_PAGE_SIZE, EepromMapResult,
+    AT24C128_CAPACITY, AT24C128_PAGE_SIZE, AnalysisCancelled, EepromMapResult,
     EepromSourceConfig, StructInfo, analyze_eeprom_source, load_source_configs,
     parse_github_location, save_source_configs, source_catalog_path, source_revision,
 )
@@ -24,7 +29,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 class _WorkerSignals(QObject):
     progress = Signal(int, int, str)
     result = Signal(object)
-    error = Signal(str)
+    error = Signal(object)
     finished = Signal()
 
 
@@ -44,7 +49,7 @@ class _Worker(QRunnable):
                 pass
         except Exception as error:  # noqa: BLE001 - convert background failures to UI errors
             try:
-                self.signals.error.emit(str(error))
+                self.signals.error.emit(error)
             except RuntimeError:
                 pass
         finally:
@@ -52,6 +57,17 @@ class _Worker(QRunnable):
                 self.signals.finished.emit()
             except RuntimeError:
                 pass
+
+
+class _CancellationToken:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
 
 
 class SummaryCard(QFrame):
@@ -405,8 +421,14 @@ class EepromMapDialog(QDialog):
         self.results: dict[str, EepromMapResult] = {}
         self.result_cache = EepromResultCacheStore()
         self.pool = QThreadPool(self)
-        self.pool.setMaxThreadCount(1)
+        self.pool.setMaxThreadCount(2)
         self.worker: _Worker | None = None
+        self._task_generation = 0
+        self._active_task_id = 0
+        self._active_token: _CancellationToken | None = None
+        self._workers: dict[int, tuple[_Worker, _CancellationToken]] = {}
+        self._displayed_result: EepromMapResult | None = None
+        self._base_warning_text = ""
         self._checking_only = False
         self.cache_root = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) / "eeprom-repositories"
         self.setWindowTitle("AT24C128 EEPROM 메모리 맵")
@@ -457,6 +479,9 @@ class EepromMapDialog(QDialog):
             QPlainTextEdit { background:#0E1418; color:#DCE5EB; border:1px solid #33404A; selection-background-color:rgba(20,124,184,130); }
             QProgressBar { background:#202830; color:#FFFFFF; border:1px solid #3A4650; text-align:center; min-height:18px; }
             QProgressBar::chunk { background:#1789C9; }
+            QProgressBar#slimProgress { background:#273139; border:0; min-height:4px; max-height:4px; }
+            QProgressBar#slimProgress::chunk { background:#3F7D9E; border-radius:2px; }
+            QLabel#progressStatus { color:#91A1AC; font-size:11px; }
             QSplitter::handle { background:#26323B; }
             QSplitter::handle:hover { background:#1683C5; }
             QScrollBar:vertical { background:#11171C; width:13px; margin:0; }
@@ -503,9 +528,6 @@ class EepromMapDialog(QDialog):
         for card in (self.used_card, self.free_card, self.page_card, self.warning_card, self.commit_card):
             cards.addWidget(card, 1)
         layout.addLayout(cards)
-        self.progress = QProgressBar()
-        self.progress.hide()
-        layout.addWidget(self.progress)
         self.content_splitter = QSplitter(Qt.Horizontal)
         self.content_splitter.setHandleWidth(7)
         self.content_splitter.setChildrenCollapsible(False)
@@ -609,6 +631,24 @@ class EepromMapDialog(QDialog):
         self.content_splitter.setStretchFactor(1, 1)
         self.content_splitter.setSizes([760, 700])
 
+        progress_frame = QFrame()
+        progress_frame.setFixedHeight(24)
+        progress_layout = QHBoxLayout(progress_frame)
+        progress_layout.setContentsMargins(4, 3, 4, 3)
+        progress_layout.setSpacing(10)
+        self.progress_status = QLabel("대기 중")
+        self.progress_status.setObjectName("progressStatus")
+        self.progress_status.setMinimumWidth(280)
+        progress_layout.addWidget(self.progress_status, 2)
+        self.progress = QProgressBar()
+        self.progress.setObjectName("slimProgress")
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(4)
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        progress_layout.addWidget(self.progress, 3)
+        layout.addWidget(progress_frame)
+
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
@@ -641,6 +681,8 @@ class EepromMapDialog(QDialog):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self.timer.stop()
+        for _, token in self._workers.values():
+            token.cancel()
         self.settings.setValue("eepromMapWindow/contentSizes", self.content_splitter.sizes())
         self.settings.setValue("eepromMapWindow/leftSizes", self.left_splitter.sizes())
         self.settings.setValue("eepromMapWindow/rightSizes", self.right_splitter.sizes())
@@ -664,13 +706,18 @@ class EepromMapDialog(QDialog):
 
     def _source_changed(self) -> None:
         config = self._current_config()
+        self._cancel_active_analysis()
         if config:
             self.settings.setValue("eepromMapWindow/currentSourceId", config.id)
         self._reset_timer()
         if config and config.id in self.results:
             self._display(self.results[config.id])
+            self.refresh(False)
         elif config:
+            self._clear_result(config, f"{config.display_name}: 분석 준비 중…")
             self.refresh(True)
+        else:
+            self._clear_result(None, "등록된 EEPROM 아이템이 없습니다.")
 
     def _reset_timer(self) -> None:
         config = self._current_config()
@@ -683,6 +730,7 @@ class EepromMapDialog(QDialog):
         self.settingsRequested.emit()
 
     def reload_configs(self, preferred_id: str = "") -> None:
+        self._cancel_active_analysis()
         self.configs = load_source_configs(self.settings, self.current_root)
         for config in self.configs:
             cached = self.result_cache.load(config)
@@ -693,6 +741,8 @@ class EepromMapDialog(QDialog):
         current = self._current_config()
         if current and current.id in self.results:
             self._display(self.results[current.id])
+        elif current:
+            self._clear_result(current, f"{current.display_name}: 분석 준비 중…")
         if current:
             self.refresh(False)
 
@@ -701,48 +751,74 @@ class EepromMapDialog(QDialog):
         if not config:
             QMessageBox.information(self, "EEPROM 소스", "먼저 EEPROM 소스 항목을 등록하십시오.")
             return
-        if self.worker is not None:
+        if self.worker is not None and self._active_token and not self._active_token.is_cancelled():
             return
         previous = self.results.get(config.id)
         self._checking_only = bool(previous and not force)
+        self._task_generation += 1
+        task_id = self._task_generation
+        token = _CancellationToken()
+        config_id = config.id
 
         def task(progress):
+            if token.is_cancelled():
+                raise AnalysisCancelled("분석이 취소되었습니다.")
             if previous and not force:
                 progress(0, 0, f"{config.display_name}: 원격 변경 확인 중…")
-                revision = source_revision(config, self.current_root)
+                revision = source_revision(config, self.current_root, token.is_cancelled)
                 if revision == previous.commit:
                     return ("unchanged", previous)
-            result = analyze_eeprom_source(config, self.current_root, self.cache_root, progress)
+            result = analyze_eeprom_source(
+                config, self.current_root, self.cache_root, progress, token.is_cancelled,
+            )
+            if token.is_cancelled():
+                raise AnalysisCancelled("분석이 취소되었습니다.")
             return ("updated", result)
 
         worker = _Worker(task)
         self.worker = worker
-        worker.signals.progress.connect(self._progress)
-        worker.signals.result.connect(self._ready)
-        worker.signals.error.connect(self._error)
-        worker.signals.finished.connect(self._finished)
+        self._active_task_id = task_id
+        self._active_token = token
+        self._workers[task_id] = (worker, token)
+        worker.signals.progress.connect(
+            lambda current, total, message, identity=task_id: self._progress(identity, current, total, message)
+        )
+        worker.signals.result.connect(
+            lambda payload, identity=task_id, source_id=config_id: self._ready(identity, source_id, payload)
+        )
+        worker.signals.error.connect(
+            lambda error, identity=task_id, source_id=config_id: self._error(identity, source_id, error)
+        )
+        worker.signals.finished.connect(lambda identity=task_id: self._finished(identity))
         self.progress.setRange(0, 0)
-        self.progress.setFormat("GitHub 브랜치 확인 중…")
-        self.progress.show()
+        self.progress_status.setText(f"{config.display_name}: 분석 시작 중…")
+        self.progress_status.setToolTip(self.progress_status.text())
         self.pool.start(worker)
 
     def _automatic_refresh(self) -> None:
         if self.isVisible():
             self.refresh(False)
 
-    def _progress(self, current: int, total: int, message: str) -> None:
-        self.subtitle.setText(message)
+    def _progress(self, task_id: int, current: int, total: int, message: str) -> None:
+        if task_id != self._active_task_id:
+            return
+        self.progress_status.setText(message)
+        self.progress_status.setToolTip(message)
         if total > 0:
             self.progress.setRange(0, total)
             self.progress.setValue(current)
         else:
             self.progress.setRange(0, 0)
-        self.progress.setFormat(message)
 
-    def _ready(self, payload: object) -> None:
+    def _ready(self, task_id: int, config_id: str, payload: object) -> None:
+        if task_id != self._active_task_id:
+            return
+        current = self._current_config()
+        if current is None or current.id != config_id:
+            return
         state, result = payload
         if state == "unchanged":
-            self.subtitle.setText(
+            self.progress_status.setText(
                 f"{result.config.display_name} · 원격 변경 없음 · {result.commit[:8] or '로컬'} · "
                 f"{result.config.refresh_minutes}분 간격"
             )
@@ -752,18 +828,44 @@ class EepromMapDialog(QDialog):
             self.result_cache.save(result)
         except Exception:  # noqa: BLE001 - cache failure must never block a completed analysis
             pass
-        if self._current_config() and self._current_config().id == result.config.id:
-            self._display(result)
+        self._display(result)
+        self.progress_status.setText(f"{result.config.display_name}: 분석 및 캐시 저장 완료")
 
-    def _error(self, message: str) -> None:
-        self.subtitle.setText("EEPROM 소스 동기화 또는 분석 실패")
+    def _error(self, task_id: int, config_id: str, error: object) -> None:
+        if task_id != self._active_task_id:
+            return
+        if isinstance(error, AnalysisCancelled):
+            self.progress_status.setText("분석 취소됨")
+            return
+        current = self._current_config()
+        if current is None or current.id != config_id:
+            return
+        message = str(error)
+        self.progress_status.setText(f"{current.display_name}: 동기화 또는 분석 실패")
+        self.progress_status.setToolTip(message)
         QMessageBox.warning(self, "EEPROM 맵 분석", message)
 
-    def _finished(self) -> None:
-        self.progress.hide()
+    def _finished(self, task_id: int) -> None:
+        self._workers.pop(task_id, None)
+        if task_id != self._active_task_id:
+            return
         self.worker = None
+        self._active_token = None
+        if self.progress.maximum() == 0:
+            self.progress.setRange(0, 1)
+            self.progress.setValue(0)
+
+    def _cancel_active_analysis(self) -> None:
+        if self._active_token is None or self._active_token.is_cancelled():
+            return
+        self._active_token.cancel()
+        self.worker = None
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.progress_status.setText("이전 아이템 분석 취소 중…")
 
     def _display(self, result: EepromMapResult) -> None:
+        self._displayed_result = result
         config = result.config
         used_pages = len({
             page for region in result.regions if region.allocated
@@ -853,9 +955,31 @@ class EepromMapDialog(QDialog):
             "- 주소/페이지 매크로, 읽기/쓰기 호출, sizeof(구조체)를 교차 연결",
             "- 컴파일 옵션과 외부 typedef를 알 수 없는 구조체 크기는 목록에서 제외하거나 확인 필요로 유지",
         ]
-        self.warning_view.setPlainText("\n".join(warning_lines))
+        self._base_warning_text = "\n".join(warning_lines)
+        self.warning_view.setPlainText(self._base_warning_text)
         if self.structure_table.rowCount():
             self.structure_table.selectRow(0)
+
+    def _clear_result(self, config: EepromSourceConfig | None, message: str) -> None:
+        self._displayed_result = None
+        self._base_warning_text = ""
+        for card in (
+            self.used_card, self.free_card, self.page_card,
+            self.warning_card, self.commit_card,
+        ):
+            card.value.setText("-")
+        self.canvas.set_result(None)
+        self.region_table.setRowCount(0)
+        self.structure_table.setRowCount(0)
+        self.structure_caption.setText("선택한 아이템 분석 중…" if config else "분석 결과 없음")
+        self.code_preview.setExtraSelections([])
+        self.code_preview.setPlainText(
+            f"{config.display_name} 분석 중…" if config else "등록된 EEPROM 분석 아이템이 없습니다."
+        )
+        self.warning_view.setPlainText("분석 완료 후 검토 및 분석 근거가 표시됩니다." if config else "")
+        self.subtitle.setText(message)
+        self.progress_status.setText(message)
+        self.progress_status.setToolTip(message)
 
     def _select_page(self, page: int) -> None:
         for row in range(self.region_table.rowCount()):
@@ -870,11 +994,13 @@ class EepromMapDialog(QDialog):
     def _region_selected(self) -> None:
         items = self.region_table.selectedItems()
         if not items:
+            self.warning_view.setPlainText(self._base_warning_text)
             return
         region = items[0].data(Qt.UserRole)
+        self._show_region_evidence(region)
         if not region or not region.struct_name:
             name = region.name if region else "선택 영역"
-            self._show_no_structure(f"{name}: 정의된 구조체 없음")
+            self._show_no_structure(f"{name}: 정의된 구조체 없음", region)
             return
         for row in range(self.structure_table.rowCount()):
             structure = self.structure_table.item(row, 0).data(Qt.UserRole)
@@ -883,15 +1009,64 @@ class EepromMapDialog(QDialog):
                 return
         self._show_no_structure(f"{region.struct_name}: 구조체 선언을 찾을 수 없음")
 
-    def _show_no_structure(self, message: str = "정의된 구조체 없음") -> None:
+    def _evidence_text(self, region) -> tuple[str, list[int]]:
+        if not region or not region.evidence_items:
+            return "판단 근거 소스: 확인 가능한 원본 행이 없습니다.", []
+        root = Path(self._displayed_result.source_root) if self._displayed_result else None
+        lines = ["판단 근거 소스"]
+        highlighted: list[int] = []
+        for item in region.evidence_items:
+            path = Path(item.path)
+            try:
+                shown_path = str(path.relative_to(root)) if root else str(path)
+            except (ValueError, TypeError):
+                shown_path = str(path)
+            label = f"[{item.kind} 근거]" if not item.kind.endswith("근거") else f"[{item.kind}]"
+            lines.append(f"{label} {shown_path}:{item.line}")
+            highlighted.append(len(lines))
+            lines.append(item.code or "(원본 소스 행을 읽을 수 없음)")
+        return "\n".join(lines), highlighted
+
+    def _set_preview_with_evidence(self, text: str, highlighted_lines: list[int]) -> None:
+        self.code_preview.setPlainText(text)
+        selections: list[QTextEdit.ExtraSelection] = []
+        document = self.code_preview.document()
+        for line in highlighted_lines:
+            block = document.findBlockByLineNumber(line)
+            if not block.isValid():
+                continue
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = QTextCursor(block)
+            selection.cursor.select(QTextCursor.LineUnderCursor)
+            selection.format.setBackground(QColor(150, 112, 32, 105))
+            selection.format.setForeground(QColor("#FFF3CC"))
+            selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+            selections.append(selection)
+        self.code_preview.setExtraSelections(selections)
+
+    def _show_region_evidence(self, region) -> None:
+        evidence, _ = self._evidence_text(region)
+        self.warning_view.setPlainText(
+            f"{self._base_warning_text}\n\n[선택 영역 판단 근거]\n{evidence}".strip()
+        )
+
+    def _show_no_structure(self, message: str = "정의된 구조체 없음", region=None) -> None:
         self.structure_table.blockSignals(True)
         self.structure_table.clearSelection()
         self.structure_table.blockSignals(False)
         self.structure_caption.setText(message)
-        self.code_preview.setPlainText(
+        evidence, highlighted = self._evidence_text(region)
+        prefix = (
             "정의된 구조체 없음\n\n"
             "이 EEPROM 영역에서는 주소 또는 읽기/쓰기 접근은 확인되었지만, "
-            "버퍼와 연결되는 C struct/union 선언을 확정하지 못했습니다."
+            "버퍼와 연결되는 C struct/union 선언을 확정하지 못했습니다.\n\n"
+            "연결 실패 가능 원인: 바이트 배열, void 포인터, 래퍼 함수 인자 또는 "
+            "분석 범위 밖의 구조체 선언\n\n"
+        )
+        prefix_lines = prefix.count("\n")
+        self._set_preview_with_evidence(
+            prefix + evidence,
+            [line + prefix_lines for line in highlighted],
         )
 
     def _structure_selected(self) -> None:
@@ -904,4 +1079,5 @@ class EepromMapDialog(QDialog):
         self.structure_caption.setText(
             f"{structure.name} · {structure.size:,} bytes · {structure.path}:{structure.line}"
         )
+        self.code_preview.setExtraSelections([])
         self.code_preview.setPlainText(structure.declaration or "원본 선언을 복원할 수 없습니다.")
