@@ -105,7 +105,108 @@ class EepromMapTests(unittest.TestCase):
                 EepromSourceConfig.create("overlap", repository_url=str(root)), "", root / "cache"
             )
             self.assertTrue(any("겹칩니다" in warning for warning in result.warnings))
-            self.assertTrue(all(item.status == "중복 영역" for item in result.regions if item.allocated))
+            self.assertTrue(all(item.status == "확정 충돌" for item in result.regions if item.allocated))
+            self.assertTrue(all(item.conflict for item in result.regions if item.allocated))
+
+    def test_device_address_and_timeout_are_not_memory_allocations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "bsp.c").write_text(
+                """
+                #define EEPROM_I2C_ADDRESS 0xA0
+                void probe(void) {
+                    EEPROM_IO_IsDeviceReady(EEPROM_I2C_ADDRESS, 300);
+                    EEPROM_IO_ReadData(EEPROM_I2C_ADDRESS, buffer, 64);
+                }
+                """,
+                encoding="utf-8",
+            )
+            result = analyze_eeprom_source(
+                EepromSourceConfig.create("bsp", repository_url=str(root)), "", root / "cache"
+            )
+            self.assertFalse([item for item in result.regions if item.allocated])
+            self.assertEqual(result.used_bytes, 0)
+
+    def test_definition_and_actual_usage_are_preserved_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "map.c").write_text(
+                """
+                #define EEPROM_ADDR_PAGE0 0
+                #define EEPROM_ADDR_PAGE1 64
+                void load(void) { EEPROM_Read(EEPROM_ADDR_PAGE1, data, 12, 0); }
+                """,
+                encoding="utf-8",
+            )
+            result = analyze_eeprom_source(
+                EepromSourceConfig.create("combined", repository_url=str(root)), "", root / "cache"
+            )
+            actual = next(item for item in result.regions if item.allocated)
+            defined_only = next(item for item in result.regions if not item.allocated)
+            self.assertTrue(actual.actual_usage)
+            self.assertTrue(actual.definition_present)
+            self.assertEqual(defined_only.name, "EEPROM_ADDR_PAGE0")
+            self.assertFalse(defined_only.actual_usage)
+            self.assertTrue(defined_only.definition_present)
+
+    def test_function_style_page_macro_is_resolved_and_linked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "map.c").write_text(
+                """
+                #define EEPROM_PAGE_SIZE 64
+                #define EEPROM_ADDR_PAGE0 0
+                #define EEPROM_ADDR_PAGE1 64
+                #define EEPROM_ADDR_PAGE2 128
+                #define EEPROM_ADDR_PAGE(n) ((n) * EEPROM_PAGE_SIZE)
+                typedef struct eeData { unsigned short value; } eeData;
+                eeData stored;
+                void load(void) {
+                    EEPROM_Read(EEPROM_ADDR_PAGE(2), (unsigned char*)&stored, sizeof(stored), 0);
+                }
+                """,
+                encoding="utf-8",
+            )
+            result = analyze_eeprom_source(
+                EepromSourceConfig.create("function-macro", repository_url=str(root)), "", root / "cache"
+            )
+            actual = next(item for item in result.regions if item.allocated)
+            self.assertEqual(actual.address, 128)
+            self.assertEqual(actual.page, 2)
+            self.assertEqual(actual.struct_name, "eeData")
+            self.assertTrue(actual.definition_present)
+            self.assertTrue(actual.actual_usage)
+
+    def test_common_at24_library_supports_direct_address_and_arbitrary_structure_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "customer.c").write_text(
+                """
+                typedef struct CustomerPersistentBlock {
+                    unsigned short serial;
+                    unsigned char flags[6];
+                } CustomerPersistentBlock;
+                CustomerPersistentBlock block;
+                void load(void) {
+                    AT24Cxx_read_byte_buffer(device, (unsigned char*)&block, 0x0200, sizeof(block));
+                }
+                void save(void) {
+                    AT24Cxx_write_byte_buffer(device, (unsigned char*)&block, 0x0200, sizeof(block));
+                }
+                """,
+                encoding="utf-8",
+            )
+            result = analyze_eeprom_source(
+                EepromSourceConfig.create("arbitrary", repository_url=str(root)), "", root / "cache"
+            )
+            actual = [item for item in result.regions if item.allocated]
+            self.assertEqual(len(actual), 1)
+            self.assertEqual(actual[0].address, 0x0200)
+            self.assertEqual(actual[0].payload_size, 8)
+            self.assertEqual(actual[0].size, 8)
+            self.assertEqual(actual[0].struct_name, "CustomerPersistentBlock")
+            self.assertIn("읽기", actual[0].access)
+            self.assertIn("쓰기", actual[0].access)
 
     def test_local_source_change_updates_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

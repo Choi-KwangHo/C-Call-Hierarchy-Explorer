@@ -32,11 +32,11 @@ from update_service import (
     RELEASE_PAGE, ReleaseInfo, UpdateError, download_asset, fetch_latest_release,
     is_newer_version, verify_downloaded_asset,
 )
-from window_state import restore_window_state, save_window_state
+from window_state import apply_dark_title_bar, restore_window_state, save_window_state
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -367,6 +367,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setStyleSheet(MAIN_WINDOW_STYLE)
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        apply_dark_title_bar(self)
         self.resize(1480, 900)
         self.session = AnalyzerSession()
         self.result: AnalysisResult | None = None
@@ -1310,11 +1311,11 @@ class MainWindow(QMainWindow):
 
         self.source_summary.setHtml(
             "<b>CODE 함수 구분</b><br>"
-            f'<span style="background:#174564;color:#D6EEFF;">&nbsp;부모(자기 자신)&nbsp;</span> '
+            f'<span style="background:#1B5574;color:#F2FAFF;">&nbsp;부모(자기 자신)&nbsp;</span> '
             f"{html.escape(function.name)}()<br>"
-            f'<span style="background:#1E4A31;color:#C9F4D6;">&nbsp;자식 호출(정의 확인)&nbsp;</span> '
+            f'<span style="background:#165264;color:#C8F7FF;">&nbsp;자식 호출(정의 확인)&nbsp;</span> '
             f"{names(resolved)}<br>"
-            f'<span style="background:#5A4019;color:#FFE2A3;">&nbsp;외부/미확인 호출&nbsp;</span> '
+            f'<span style="background:#68481A;color:#FFF0BE;">&nbsp;외부/미확인 호출&nbsp;</span> '
             f"{names(external)}"
         )
         return resolved, external
@@ -1353,9 +1354,9 @@ class MainWindow(QMainWindow):
                     selection.format = text_format
                     selections.append(selection)
 
-        add(external, "#5A4019", "#FFE2A3")
-        add(resolved, "#1E4A31", "#C9F4D6")
-        add([parent_name], "#174564", "#D6EEFF", True)
+        add(external, "#68481A", "#FFF0BE", True)
+        add(resolved, "#165264", "#C8F7FF", True)
+        add([parent_name], "#1B5574", "#F2FAFF", True)
         self.source_view.setExtraSelections(selections)
 
     def _show_function(self, function_id: str) -> None:
@@ -1365,7 +1366,7 @@ class MainWindow(QMainWindow):
         if not function:
             self.source_summary.setHtml(
                 '<b>CODE 함수 구분</b><br>'
-                '<span style="background:#5A4019;color:#FFE2A3;">&nbsp;외부/미확인 함수 선택&nbsp;</span><br>'
+                '<span style="background:#68481A;color:#FFF0BE;">&nbsp;외부/미확인 함수 선택&nbsp;</span><br>'
                 '현재 분석 폴더에서 함수 정의를 찾지 못했습니다.'
             )
             self.source_view.setPlainText(

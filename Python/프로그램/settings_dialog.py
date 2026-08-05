@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from window_state import apply_dark_title_bar
+
 
 BUILT_IN_EXCLUDED_DIRS = {".git", ".svn", ".hg", "node_modules", "dist", "build", ".vs"}
 PATH_ROLE = Qt.UserRole
@@ -259,6 +261,7 @@ class ProjectSettingsDialog(QDialog):
         self.root = Path(root).resolve()
         self.setFont(QFont("Malgun Gothic", 9))
         self.setWindowTitle("설정 — C Call Hierarchy Explorer")
+        apply_dark_title_bar(self)
         self.resize(980, 680)
         self.setMinimumSize(760, 520)
         self.setStyleSheet("""

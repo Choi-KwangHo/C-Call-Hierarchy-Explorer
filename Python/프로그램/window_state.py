@@ -1,9 +1,27 @@
 from __future__ import annotations
 
 import json
+import ctypes
+import sys
 
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QGuiApplication
+
+
+def apply_dark_title_bar(widget) -> None:
+    """Use the Windows dark non-client title bar while keeping a safe fallback."""
+    if sys.platform != "win32":
+        return
+    try:
+        hwnd = int(widget.winId())
+        enabled = ctypes.c_int(1)
+        dwm = ctypes.windll.dwmapi
+        # DWMWA_USE_IMMERSIVE_DARK_MODE is 20 on current Windows 10/11 and
+        # 19 on older Windows 10 builds.
+        if dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(enabled), ctypes.sizeof(enabled)) != 0:
+            dwm.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(enabled), ctypes.sizeof(enabled))
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 def screen_topology() -> str:

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QFileDialog, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
-    QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from eeprom_map import (
@@ -17,7 +17,7 @@ from eeprom_map import (
     EepromSourceConfig, StructInfo, analyze_eeprom_source, load_source_configs,
     parse_github_location, save_source_configs, source_catalog_path, source_revision,
 )
-from window_state import restore_window_state, save_window_state
+from window_state import apply_dark_title_bar, restore_window_state, save_window_state
 
 
 class _WorkerSignals(QObject):
@@ -76,6 +76,7 @@ class MemoryMapCanvas(QWidget):
         self.result: EepromMapResult | None = None
         self.selected_page = -1
         self.setMinimumHeight(335)
+        self.setMinimumWidth(640)
         self.setMouseTracking(True)
 
     def set_result(self, result: EepromMapResult | None) -> None:
@@ -106,7 +107,11 @@ class MemoryMapCanvas(QWidget):
             return
         start = page * self.result.config.page_size
         matches = [region for region in self.result.regions if region.address < start + self.result.config.page_size and region.address + region.size > start]
-        detail = "\n".join(f"• {item.name}: {item.payload_size}/{item.size} bytes ({item.status})" for item in matches)
+        detail = "\n".join(
+            f"{'◆' if item.actual_usage and item.definition_present else '●' if item.actual_usage else '◇'} "
+            f"{item.name}: {item.payload_size}/{item.size} bytes ({item.status})"
+            for item in matches
+        )
         self.setToolTip(
             f"Page {page} · 0x{start:04X}~0x{start + self.result.config.page_size - 1:04X}"
             + (f"\n{detail}" if detail else "\n미사용")
@@ -131,16 +136,19 @@ class MemoryMapCanvas(QWidget):
         left, top, width, height, columns = self._geometry()
         page_count = max(1, self.result.config.capacity // self.result.config.page_size)
         states = ["free"] * page_count
+        priority = {"free": 0, "defined": 1, "used": 2, "linked": 3, "conflict": 4}
         for region in self.result.regions:
-            if not region.allocated:
-                continue
             first = max(0, region.address // self.result.config.page_size)
             last = min(page_count - 1, max(region.address, region.address + region.size - 1) // self.result.config.page_size)
+            state = (
+                "conflict" if region.conflict or region.out_of_range
+                else "linked" if region.actual_usage and region.struct_name
+                else "used" if region.actual_usage
+                else "defined"
+            )
             for page in range(first, last + 1):
-                if region.status == "중복 영역" or states[page] == "used":
-                    states[page] = "overlap"
-                else:
-                    states[page] = "used"
+                if priority[state] > priority[states[page]]:
+                    states[page] = state
         painter.setFont(QFont("Segoe UI", 8))
         for page in range(min(256, page_count)):
             row, column = divmod(page, columns)
@@ -148,7 +156,11 @@ class MemoryMapCanvas(QWidget):
             color = QColor("#26313A")
             if states[page] == "used":
                 color = QColor("#2583C5")
-            elif states[page] == "overlap":
+            elif states[page] == "linked":
+                color = QColor("#249B78")
+            elif states[page] == "defined":
+                color = QColor("#52616C")
+            elif states[page] == "conflict":
                 color = QColor("#D94A4A")
             if page == self.selected_page:
                 color = QColor("#F0A33B")
@@ -218,6 +230,7 @@ class EepromSourceSettingsDialog(QDialog):
         super().__init__(parent)
         self.current_root = current_root
         self.setWindowTitle("EEPROM 소스 및 자동 동기화 설정")
+        apply_dark_title_bar(self)
         self.resize(1280, 560)
         self.setMinimumSize(900, 430)
         self.setStyleSheet("""
@@ -382,6 +395,7 @@ class EepromMapDialog(QDialog):
         self._checking_only = False
         self.cache_root = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) / "eeprom-repositories"
         self.setWindowTitle("AT24C128 EEPROM 메모리 맵")
+        apply_dark_title_bar(self)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.setSizeGripEnabled(True)
         self.resize(1540, 920)
@@ -484,12 +498,18 @@ class EepromMapDialog(QDialog):
         map_title = QLabel("EEPROM 물리 페이지 맵")
         map_title.setStyleSheet("font-size:14px; font-weight:600; color:#F2F6F8;")
         map_layout.addWidget(map_title)
-        legend = QLabel("■ 사용 페이지    ■ 중복/충돌    ■ 선택 페이지    ■ 미사용")
+        legend = QLabel("■ 정의만    ■ 실사용    ■ 실사용 + 구조체 연결    ■ 확정 충돌    ■ 선택 페이지")
         legend.setStyleSheet("color:#AAB6C0;")
         map_layout.addWidget(legend)
         self.canvas = MemoryMapCanvas()
         self.canvas.pageSelected.connect(self._select_page)
-        map_layout.addWidget(self.canvas, 1)
+        self.map_scroll = QScrollArea()
+        self.map_scroll.setWidgetResizable(True)
+        self.map_scroll.setFrameShape(QFrame.NoFrame)
+        self.map_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.map_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.map_scroll.setWidget(self.canvas)
+        map_layout.addWidget(self.map_scroll, 1)
         self.left_splitter.addWidget(map_panel)
 
         region_panel = QFrame()
@@ -739,19 +759,41 @@ class EepromMapDialog(QDialog):
                 source = str(Path(region.path).relative_to(root))
             except ValueError:
                 source = Path(region.path).name
+            usage_mark = (
+                "◆" if region.actual_usage and region.definition_present
+                else "●" if region.actual_usage
+                else "◇"
+            )
+            display_status = region.status
+            if not region.conflict and not region.out_of_range:
+                if region.actual_usage and region.definition_present:
+                    display_status = "정의 + 실사용"
+                elif region.actual_usage:
+                    display_status = "실사용 (정의 미연결)"
+                else:
+                    display_status = "정의만 존재"
             values = [
-                str(region.page), f"0x{region.address:04X}", f"0x{region.end_address:04X}",
+                f"{usage_mark} {region.page}", f"0x{region.address:04X}", f"0x{region.end_address:04X}",
                 region.name, region.struct_name or "-", f"{region.payload_size:,} B",
                 f"{region.size:,} B", f"{max(0, region.size - region.payload_size):,} B",
-                region.access, region.status, source, ", ".join(map(str, region.lines)),
+                region.access, display_status, source, ", ".join(map(str, region.lines)),
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, region)
-                if region.status == "중복 영역":
+                item.setToolTip(
+                    "◆ 정의와 실제 API 사용이 모두 확인됨\n"
+                    "● 실제 API 사용 확인, 대응 정의 미연결\n"
+                    "◇ 정의/예약만 확인됨"
+                )
+                if region.conflict:
                     item.setBackground(QColor(150, 45, 45, 105))
-                elif region.status == "용량 초과":
+                elif region.out_of_range:
                     item.setBackground(QColor(180, 100, 25, 105))
+                elif region.actual_usage and region.struct_name:
+                    item.setBackground(QColor(35, 137, 106, 55))
+                elif region.actual_usage:
+                    item.setBackground(QColor(37, 131, 197, 45))
                 self.region_table.setItem(row, column, item)
         self.structure_table.setRowCount(0)
         for structure in result.structures:

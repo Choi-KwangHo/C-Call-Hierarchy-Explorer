@@ -20,6 +20,7 @@ from trace_instrumentation import (
     TracePoint, apply_trace_point, generate_trace_runtime, load_trace_points,
     preview_add_trace_point, remove_trace_point,
 )
+from window_state import apply_dark_title_bar
 
 try:
     from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
@@ -176,7 +177,29 @@ class TraceCenterDialog(QDialog):
         self._serial_buffer = ""
         self.serial = QSerialPort(self) if QSerialPort is not None else None
         self.setWindowTitle("실행 구조 및 Trace 센터")
+        apply_dark_title_bar(self)
         self.resize(1120, 760)
+        self.setStyleSheet("""
+            QDialog, QWidget { background:#151A1F; color:#DDE6EC; }
+            QLabel { color:#C9D4DB; }
+            QTabWidget::pane { border:1px solid #33404A; background:#11171C; }
+            QTabBar::tab { background:#222B33; color:#BFCBD4; padding:8px 16px; border:1px solid #33404A; }
+            QTabBar::tab:selected { background:#176B9A; color:#FFFFFF; }
+            QLineEdit, QComboBox, QSpinBox { background:#0E151A; color:#EDF3F6; border:1px solid #465661; border-radius:3px; padding:5px; }
+            QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { background:#20272D; color:#7F8B94; }
+            QComboBox QAbstractItemView { background:#11181E; color:#E8EEF2; selection-background-color:#216F9E; selection-color:#FFFFFF; }
+            QPushButton { background:#27343D; color:#F0F5F7; border:1px solid #4A5A65; border-radius:3px; padding:6px 11px; }
+            QPushButton:hover { background:#374852; border-color:#637986; }
+            QPushButton:disabled { background:#20272D; color:#74818A; border-color:#343F47; }
+            QTreeWidget, QTableWidget { background:#10161B; alternate-background-color:#171E24; color:#DCE6EC; gridline-color:#303D46; border:1px solid #303D46; selection-background-color:rgba(28,118,170,135); selection-color:#FFFFFF; }
+            QHeaderView::section { background:#23303A; color:#F0F4F6; border:0; border-right:1px solid #3A4852; border-bottom:1px solid #3A4852; padding:7px; }
+            QPlainTextEdit { background:#0B1217; color:#D7E3E9; border:1px solid #33414B; selection-background-color:rgba(30,119,169,145); selection-color:#FFFFFF; }
+            QSplitter::handle { background:#27343D; }
+            QSplitter::handle:hover { background:#1683C5; }
+            QScrollBar:vertical { background:#11171C; width:13px; }
+            QScrollBar::handle:vertical { background:#485B67; min-height:28px; border-radius:5px; margin:2px; }
+            QToolTip { background:#222D35; color:#F1F5F7; border:1px solid #536570; }
+        """)
         self._build_ui()
         self.refresh(result)
 

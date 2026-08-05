@@ -102,6 +102,10 @@ class EepromRegion:
     payload_size: int = 0
     status: str = "정상"
     allocated: bool = True
+    definition_present: bool = False
+    actual_usage: bool = True
+    conflict: bool = False
+    out_of_range: bool = False
 
     @property
     def end_address(self) -> int:
@@ -443,6 +447,14 @@ def _collect_macros(sources: list[tuple[Path, str]]) -> tuple[dict[str, str], di
                 continue
             expressions[name] = expression
             origins[name] = (path, source.count("\n", 0, match.start()) + 1)
+        for match in re.finditer(
+            r"(?m)^\s*#\s*define\s+([A-Za-z_]\w*)\s*\([^\r\n)]*\)\s+[^\r\n\\]+",
+            masked,
+        ):
+            origins.setdefault(
+                match.group(1),
+                (path, source.count("\n", 0, match.start()) + 1),
+            )
     values: dict[str, int] = {}
     for _ in range(max(4, len(expressions) + 1)):
         changed = False
@@ -630,6 +642,29 @@ def _base_symbol(name: str) -> str:
     return value
 
 
+def _is_storage_address_symbol(name: str) -> bool:
+    """Accept EEPROM memory addresses but reject I2C/device addresses."""
+    upper = name.upper()
+    if re.search(r"I2C|DEVICE|DEV_|SLAVE|BASE_ADDR|CHIP_ADDR", upper):
+        return False
+    return bool(re.search(r"ADDR|ADDRESS|OFFSET|PAGE", upper))
+
+
+def _is_storage_access_function(name: str) -> bool:
+    """Reject readiness/initialisation and board transport helper calls."""
+    lowered = name.casefold()
+    if any(word in lowered for word in (
+        "isdeviceready", "is_device_ready", "ready", "init", "deinit",
+        "get_pg_size", "get_page_size", "get_max_addr", "add_dev", "get_dev",
+    )):
+        return False
+    if re.search(r"(?:^|_)io_(?:read|write)", lowered):
+        return False
+    return any(word in lowered for word in (
+        "read", "write", "save", "load", "store", "program", "byte_buffer",
+    ))
+
+
 def _resolve_size(
     argument: str, macro_values: dict[str, int], structures: dict[str, StructInfo],
     variable_types: dict[str, str], variable_sizes: dict[str, int],
@@ -687,16 +722,48 @@ def _infer_regions(
             variable_types[variable] = type_name if type_name in structure_map else ""
             variable_sizes[variable] = known_sizes[type_name] * count
         for function, raw_arguments, start in _call_expressions(masked):
+            if not _is_storage_access_function(function):
+                continue
             arguments = _split_arguments(raw_arguments)
             address = None
             address_name = ""
             address_index = -1
+            known_address_index = (
+                0 if function in {"EEPROM_Read", "EEPROM_Write"}
+                else 2 if "byte_buffer" in function.casefold() and ("at24" in function.casefold() or "24c" in function.casefold())
+                else -1
+            )
+            if 0 <= known_address_index < len(arguments):
+                direct_address = _safe_integer(arguments[known_address_index], macro_values)
+                if direct_address is not None:
+                    address = direct_address
+                    address_index = known_address_index
+                    address_name = next(
+                        (
+                            name for name in re.findall(r"\b[A-Za-z_]\w*\b", arguments[known_address_index])
+                            if name in origins and _is_storage_address_symbol(name)
+                        ),
+                        f"0x{direct_address:04X}",
+                    )
             for index, argument in enumerate(arguments):
+                if address is not None:
+                    break
+                function_macro = re.fullmatch(
+                    r"\s*([A-Za-z_]\w*)\s*\(\s*([^()]*)\s*\)\s*",
+                    argument,
+                )
+                if function_macro and _is_storage_address_symbol(function_macro.group(1)):
+                    page_value = _safe_integer(function_macro.group(2), macro_values)
+                    if page_value is not None:
+                        address_name = function_macro.group(1)
+                        address = page_value * config.page_size
+                        address_index = index
+                        break
                 names = re.findall(r"\b[A-Za-z_]\w*\b", argument)
                 address_symbols = [
                     name for name in names
                     if name in macro_values
-                    and re.search(r"ADDR|ADDRESS|OFFSET|PAGE", name, re.I)
+                    and _is_storage_address_symbol(name)
                     and not re.search(r"SIZE|COUNT|MAX|LIMIT", name, re.I)
                 ]
                 resolved = _safe_integer(argument, macro_values)
@@ -719,8 +786,9 @@ def _infer_regions(
             preferred_size_index = -1
             if function in {"EEPROM_Read", "EEPROM_Write"} and len(arguments) > 2:
                 preferred_size_index = 2
-            elif ("at24" in function.casefold() or "24c" in function.casefold()) and address_index + 1 < len(arguments):
-                preferred_size_index = address_index + 1
+            elif ("at24" in function.casefold() or "24c" in function.casefold()):
+                if "byte_buffer" in function.casefold() and address_index + 1 < len(arguments):
+                    preferred_size_index = address_index + 1
             if preferred_size_index >= 0:
                 size, struct_name = _resolve_size(
                     arguments[preferred_size_index], macro_values, structure_map,
@@ -739,14 +807,8 @@ def _infer_regions(
                 if size is None and variable_match and variable_types.get(variable_match.group(1)):
                     struct_name = variable_types[variable_match.group(1)]
                     size = structure_map[struct_name].size
-            if size is None:
-                for index in range(len(arguments) - 1, address_index, -1):
-                    candidate, _ = _resolve_size(
-                        arguments[index], macro_values, structure_map, variable_types, variable_sizes
-                    )
-                    if candidate is not None and 0 < candidate <= config.capacity:
-                        size = candidate
-                        break
+            # Do not guess from an arbitrary numeric argument.  In HAL/BSP
+            # calls it is commonly a timeout or retry count (for example 300).
             if size is None:
                 base = _base_symbol(address_name)
                 matched = next((item for item in structures if _base_symbol(item.name) == base), None)
@@ -764,6 +826,8 @@ def _infer_regions(
                 "높음" if struct_name else "중간",
                 f"{function} 호출의 {address_name or '주소 인자'}",
                 payload_size,
+                definition_present=address_name in origins,
+                actual_usage=True,
             ))
 
     # Address/page macros not referenced by a recognizable driver call still
@@ -802,20 +866,29 @@ def _infer_regions(
         struct_name = matched.name if matched else ""
         size = size or (matched.size if matched else config.page_size)
         origin, line = origins.get(name, (Path(""), 0))
+        existing = next(
+            (item for item in regions if item.allocated and item.address == address),
+            None,
+        )
+        if existing is not None:
+            existing.definition_present = True
+            continue
         regions.append(EepromRegion(
             name, address, size, address // config.page_size, struct_name,
             str(origin), [line], "정의", "낮음", "주소/페이지 매크로에서 추정",
-            size, "정의만 존재", False,
+            size, "정의만 존재", False, True, False,
         ))
 
-    merged: dict[tuple[int, int, str, str], EepromRegion] = {}
+    merged: dict[tuple[int, int, str, bool], EepromRegion] = {}
     for region in regions:
-        key = (region.address, region.size, region.name, region.struct_name)
+        key = (region.address, region.size, region.struct_name, region.allocated)
         existing = merged.get(key)
         if existing:
             existing.lines = sorted(set(existing.lines + region.lines))
             if region.access not in existing.access:
                 existing.access = f"{existing.access}/{region.access}"
+            existing.definition_present = existing.definition_present or region.definition_present
+            existing.actual_usage = existing.actual_usage or region.actual_usage
         else:
             merged[key] = region
     return sorted(merged.values(), key=lambda item: (item.address, item.size, item.name.casefold()))
@@ -834,17 +907,25 @@ def _apply_region_status(regions: list[EepromRegion], capacity: int) -> tuple[li
         start, end = region.address, region.address + region.size
         if start < 0 or end > capacity:
             region.status = "용량 초과"
+            region.out_of_range = True
             warnings.append(f"{region.name}: 0x{start:04X}~0x{end - 1:04X}가 EEPROM 용량을 벗어납니다.")
         for previous in regions:
             if previous is region or previous.address > region.address:
                 break
+            if not previous.allocated:
+                continue
             previous_end = previous.address + max(0, previous.size)
             if previous_end > start and previous.address < end:
-                if previous.address == start and previous.size == region.size and previous.name == region.name:
+                if (
+                    previous.address == start
+                    and previous.size == region.size
+                    and previous.struct_name == region.struct_name
+                ):
                     continue
-                region.status = "중복 영역"
-                if previous.status == "정상":
-                    previous.status = "중복 영역"
+                region.status = "확정 충돌"
+                region.conflict = True
+                previous.status = "확정 충돌"
+                previous.conflict = True
                 warnings.append(f"{previous.name} ↔ {region.name}: EEPROM 주소 범위가 겹칩니다.")
         clipped_start, clipped_end = max(0, start), min(capacity, end)
         if clipped_end > clipped_start:
