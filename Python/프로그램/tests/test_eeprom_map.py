@@ -38,7 +38,7 @@ class EepromMapTests(unittest.TestCase):
         )
         self.assertEqual(clone, "https://github.com/example/firmware.git")
         self.assertEqual(branch, "develop")
-        self.assertEqual(subpath, "App")
+        self.assertEqual(subpath, "")
 
     def test_at24c128_pages_structures_and_physical_usage_are_linked(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -119,6 +119,21 @@ class EepromMapTests(unittest.TestCase):
             source.write_text("void second(void) { int changed = 1; }\n", encoding="utf-8")
             after = source_revision(config, "")
             self.assertNotEqual(before, after)
+
+    def test_legacy_subdirectory_is_ignored_and_full_root_is_analyzed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "map.c").write_text(
+                "#define EEPROM_PAGE0 0\nvoid save(void){EEPROM_Write(EEPROM_PAGE0,data,8,0);}\n",
+                encoding="utf-8",
+            )
+            config = EepromSourceConfig.create(
+                "full-root", source_type="local", repository_url=str(root),
+                subdirectory="folder-that-does-not-exist",
+            )
+            result = analyze_eeprom_source(config, "", root / "cache")
+            self.assertTrue(result.regions)
+            self.assertEqual(Path(result.source_root), root)
 
     def test_local_sources_are_saved_for_user_but_excluded_from_deploy_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

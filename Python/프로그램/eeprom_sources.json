@@ -7,7 +7,7 @@
       "source_type": "github",
       "repository_url": "https://github.com/Esol-Lab/Susan-Heavy-duty-lift-48V.git",
       "branch": "main",
-      "subdirectory": "48V_HDL/App",
+      "subdirectory": "",
       "capacity": 16384,
       "page_size": 64,
       "auto_refresh": true,

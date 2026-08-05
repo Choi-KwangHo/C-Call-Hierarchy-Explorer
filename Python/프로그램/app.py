@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QProcess, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QProcess, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QFont, QIcon, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QLabel, QLineEdit,
@@ -25,18 +25,54 @@ from project_cache import ProjectCacheStore
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions
 from trace_ui import TraceCenterDialog
 from eeprom_map import load_source_configs, save_source_configs
-from eeprom_ui import EepromMapDialog, EepromSourceSettingsDialog
+from eeprom_ui import CDeclarationHighlighter, EepromMapDialog, EepromSourceSettingsDialog
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
 from update_service import (
     RELEASE_PAGE, ReleaseInfo, UpdateError, download_asset, fetch_latest_release,
     is_newer_version, verify_downloaded_asset,
 )
+from window_state import restore_window_state, save_window_state
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 APP_PUBLISHER = "Call Hierarchy Tools"
+
+MAIN_WINDOW_STYLE = """
+QMainWindow { background:#11161B; color:#DCE5EB; }
+QWidget { color:#DCE5EB; }
+QMenuBar { background:#171D23; color:#DCE5EB; border-bottom:1px solid #2E3A43; }
+QMenuBar::item { padding:6px 10px; background:transparent; }
+QMenuBar::item:selected { background:#26343E; color:#FFFFFF; }
+QMenu { background:#171D23; color:#DCE5EB; border:1px solid #3A4751; padding:4px; }
+QMenu::item { padding:6px 28px 6px 10px; }
+QMenu::item:selected { background:#175E8C; color:#FFFFFF; }
+QMenu::separator { height:1px; background:#35424C; margin:4px 8px; }
+QToolBar { background:#1B2229; border:0; border-bottom:1px solid #34414B; spacing:5px; padding:4px; }
+QPushButton { background:#27333C; color:#EDF3F6; border:1px solid #465661; border-radius:3px; padding:5px 10px; }
+QPushButton:hover { background:#354550; border-color:#5D7280; }
+QPushButton:pressed { background:#17648F; }
+QLineEdit, QComboBox { background:#0F151A; color:#E8EEF2; border:1px solid #465661; border-radius:3px; padding:5px; }
+QComboBox QAbstractItemView { background:#12191F; color:#E8EEF2; selection-background-color:#1C6898; selection-color:#FFFFFF; }
+QTreeWidget { background:#10161B; alternate-background-color:#151D23; color:#D9E3E9; border:1px solid #303D46; outline:0; }
+QTreeWidget::item { min-height:23px; padding:2px; }
+QTreeWidget::item:hover { background:#1E2D37; }
+QTreeWidget::item:selected { background:rgba(26,126,184,135); color:#FFFFFF; }
+QHeaderView::section { background:#202A32; color:#E8EEF2; border:0; border-right:1px solid #3A4751; border-bottom:1px solid #3A4751; padding:6px; }
+QTextEdit, QPlainTextEdit { background:#0D1318; color:#D7E2E8; border:1px solid #303D46; selection-background-color:#1D668F; selection-color:#FFFFFF; }
+QStatusBar { background:#182027; color:#C5D0D7; border-top:1px solid #34414B; }
+QProgressBar { background:#11171C; color:#FFFFFF; border:1px solid #3B4953; text-align:center; min-height:17px; }
+QProgressBar::chunk { background:#1683C5; }
+QSplitter::handle { background:#27343D; }
+QSplitter::handle:hover { background:#1683C5; }
+QScrollBar:vertical { background:#11171C; width:13px; }
+QScrollBar::handle:vertical { background:#465762; min-height:28px; border-radius:5px; margin:2px; }
+QScrollBar::handle:vertical:hover { background:#607582; }
+QScrollBar:horizontal { background:#11171C; height:13px; }
+QScrollBar::handle:horizontal { background:#465762; min-width:28px; border-radius:5px; margin:2px; }
+QToolTip { background:#222D35; color:#F1F5F7; border:1px solid #536570; padding:4px; }
+"""
 
 
 def application_settings() -> QSettings:
@@ -329,6 +365,7 @@ class RecentStartPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.setStyleSheet(MAIN_WINDOW_STYLE)
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1480, 900)
         self.session = AnalyzerSession()
@@ -365,6 +402,10 @@ class MainWindow(QMainWindow):
         if self.recent_folders != stored_folders:
             self.settings.setValue("recentFolders", self.recent_folders)
         self._build_ui()
+        self._startup_window_mode = restore_window_state(
+            self, self.settings, "mainWindow", (1480, 900)
+        )
+        QTimer.singleShot(0, self._apply_saved_window_mode)
         self._restoring_state = False
 
         self.monitor_timer = QTimer(self)
@@ -472,6 +513,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.source_action)
         view_menu.addSeparator()
         view_menu.addAction(self.other_roots_action)
+        view_menu.addSeparator()
+        self.fullscreen_action = QAction("전체 화면", self, checkable=True)
+        self.fullscreen_action.setShortcut("F11")
+        self.fullscreen_action.toggled.connect(self._toggle_main_fullscreen)
+        view_menu.addAction(self.fullscreen_action)
 
         help_menu = self.menuBar().addMenu("도움말")
         update_action = QAction("업데이트 확인…", self)
@@ -509,11 +555,13 @@ class MainWindow(QMainWindow):
         self.source_summary.setReadOnly(True)
         self.source_summary.setFixedHeight(112)
         self.source_summary.setStyleSheet(
-            "QTextEdit { background: #F6F8FA; border: 0; border-bottom: 1px solid #B8C5CE; padding: 5px; }"
+            "QTextEdit { background:#151D23; color:#DCE5EB; border:0; border-bottom:1px solid #35434D; padding:7px; }"
         )
         self.source_view = QPlainTextEdit()
         self.source_view.setReadOnly(True)
         self.source_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.source_view.setFont(QFont("Cascadia Mono", 10))
+        self.source_highlighter = CDeclarationHighlighter(self.source_view.document())
         self.source_panel.setMinimumWidth(360)
         self.source_panel.setVisible(self.source_action.isChecked())
         source_layout.addWidget(self.source_summary)
@@ -548,6 +596,28 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.progress)
         self._refresh_recent_views()
         self._show_start_page()
+
+    def _apply_saved_window_mode(self) -> None:
+        if self._startup_window_mode == "fullscreen":
+            self.fullscreen_action.blockSignals(True)
+            self.fullscreen_action.setChecked(True)
+            self.fullscreen_action.blockSignals(False)
+            self.showFullScreen()
+        elif self._startup_window_mode == "maximized":
+            self.showMaximized()
+
+    def _toggle_main_fullscreen(self, enabled: bool) -> None:
+        if enabled:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange and hasattr(self, "fullscreen_action"):
+            self.fullscreen_action.blockSignals(True)
+            self.fullscreen_action.setChecked(self.isFullScreen())
+            self.fullscreen_action.blockSignals(False)
 
     def _set_file_panel_visible(self, visible: bool) -> None:
         self.file_tree.setVisible(visible)
@@ -1240,11 +1310,11 @@ class MainWindow(QMainWindow):
 
         self.source_summary.setHtml(
             "<b>CODE 함수 구분</b><br>"
-            f'<span style="background:#B7DDF7;color:#0B3D66;">&nbsp;부모(자기 자신)&nbsp;</span> '
+            f'<span style="background:#174564;color:#D6EEFF;">&nbsp;부모(자기 자신)&nbsp;</span> '
             f"{html.escape(function.name)}()<br>"
-            f'<span style="background:#CDECCF;color:#135C1F;">&nbsp;자식 호출(정의 확인)&nbsp;</span> '
+            f'<span style="background:#1E4A31;color:#C9F4D6;">&nbsp;자식 호출(정의 확인)&nbsp;</span> '
             f"{names(resolved)}<br>"
-            f'<span style="background:#FFE2A8;color:#8A5200;">&nbsp;외부/미확인 호출&nbsp;</span> '
+            f'<span style="background:#5A4019;color:#FFE2A3;">&nbsp;외부/미확인 호출&nbsp;</span> '
             f"{names(external)}"
         )
         return resolved, external
@@ -1283,9 +1353,9 @@ class MainWindow(QMainWindow):
                     selection.format = text_format
                     selections.append(selection)
 
-        add(external, "#FFE2A8", "#8A5200")
-        add(resolved, "#CDECCF", "#135C1F")
-        add([parent_name], "#B7DDF7", "#0B3D66", True)
+        add(external, "#5A4019", "#FFE2A3")
+        add(resolved, "#1E4A31", "#C9F4D6")
+        add([parent_name], "#174564", "#D6EEFF", True)
         self.source_view.setExtraSelections(selections)
 
     def _show_function(self, function_id: str) -> None:
@@ -1295,7 +1365,7 @@ class MainWindow(QMainWindow):
         if not function:
             self.source_summary.setHtml(
                 '<b>CODE 함수 구분</b><br>'
-                '<span style="background:#FFE2A8;color:#8A5200;">&nbsp;외부/미확인 함수 선택&nbsp;</span><br>'
+                '<span style="background:#5A4019;color:#FFE2A3;">&nbsp;외부/미확인 함수 선택&nbsp;</span><br>'
                 '현재 분석 폴더에서 함수 정의를 찾지 못했습니다.'
             )
             self.source_view.setPlainText(
@@ -1606,6 +1676,7 @@ class MainWindow(QMainWindow):
             self.pool.waitForDone()
             QApplication.processEvents()
         self._save_cache_now()
+        save_window_state(self, self.settings, "mainWindow")
         self._closing = True
         self.pool.clear()
         self.cache_pool.clear()

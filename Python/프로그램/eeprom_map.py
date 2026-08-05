@@ -54,7 +54,9 @@ class EepromSourceConfig:
             source_type=source_type,
             repository_url=repository_url,
             branch=str(value.get("branch") or "main"),
-            subdirectory=str(value.get("subdirectory") or ""),
+            # Since v1.3.2 every registered source is analyzed from its root.
+            # Keep the field for backward-compatible settings decoding only.
+            subdirectory="",
             capacity=max(1, int(value.get("capacity") or AT24C128_CAPACITY)),
             page_size=max(1, int(value.get("page_size") or AT24C128_PAGE_SIZE)),
             auto_refresh=bool(value.get("auto_refresh", True)),
@@ -208,7 +210,8 @@ def parse_github_location(repository_url: str, configured_branch: str) -> tuple[
     if len(parts) >= 4 and parts[2] == "tree":
         if not configured_branch.strip():
             branch = parts[3]
-        subpath = "/".join(parts[4:])
+        # A /tree/ URL may still provide the branch, but its folder portion is
+        # intentionally ignored: EEPROM analysis always searches the full repo.
     if branch.startswith("-") or ".." in branch or not re.fullmatch(r"[A-Za-z0-9_./-]+", branch):
         raise ValueError("안전하지 않은 Git 브랜치 이름입니다.")
     return f"https://github.com/{owner}/{repository}.git", branch, subpath
@@ -283,16 +286,6 @@ def synchronize_source(
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
         commit = _run_git(["-C", str(root), "rev-parse", "HEAD"], timeout=15)
-    subdirectory = config.subdirectory.strip().replace("\\", "/") or url_subpath
-    if subdirectory:
-        candidate = (root / subdirectory).resolve()
-        try:
-            candidate.relative_to(root.resolve())
-        except ValueError as error:
-            raise ValueError("분석 하위 경로가 저장소 밖을 가리킵니다.") from error
-        if not candidate.is_dir():
-            raise RuntimeError(f"분석 하위 폴더를 찾을 수 없습니다: {subdirectory}")
-        root = candidate
     if local_source:
         commit = _local_source_revision(root)
     notify(1, 3, f"{config.display_name}: C 소스 검색 중…")
@@ -307,9 +300,6 @@ def source_revision(config: EepromSourceConfig, current_root: str) -> str:
         return _local_source_revision(root)
     if Path(clone_url).is_dir():
         root = Path(clone_url).resolve()
-        subdirectory = config.subdirectory.strip().replace("\\", "/")
-        if subdirectory:
-            root = (root / subdirectory).resolve()
         return _local_source_revision(root)
     output = _run_git(["ls-remote", clone_url, f"refs/heads/{branch}"], timeout=30)
     revision = output.split(None, 1)[0] if output else ""

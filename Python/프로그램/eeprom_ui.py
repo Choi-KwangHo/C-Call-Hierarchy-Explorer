@@ -4,7 +4,7 @@ import html
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, QStandardPaths, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QPainter, QPen, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -17,6 +17,7 @@ from eeprom_map import (
     EepromSourceConfig, StructInfo, analyze_eeprom_source, load_source_configs,
     parse_github_location, save_source_configs, source_catalog_path, source_revision,
 )
+from window_state import restore_window_state, save_window_state
 
 
 class _WorkerSignals(QObject):
@@ -74,7 +75,7 @@ class MemoryMapCanvas(QWidget):
         super().__init__()
         self.result: EepromMapResult | None = None
         self.selected_page = -1
-        self.setMinimumHeight(245)
+        self.setMinimumHeight(335)
         self.setMouseTracking(True)
 
     def set_result(self, result: EepromMapResult | None) -> None:
@@ -87,7 +88,7 @@ class MemoryMapCanvas(QWidget):
         rows = 16
         left, top = 62, 26
         cell_width = max(24, (self.width() - left - 16) // columns)
-        cell_height = max(11, (self.height() - top - 18) // rows)
+        cell_height = max(17, (self.height() - top - 18) // rows)
         return left, top, cell_width, cell_height, columns
 
     def _page_at(self, position) -> int:
@@ -169,23 +170,49 @@ class CDeclarationHighlighter(QSyntaxHighlighter):
         keyword = QTextCharFormat()
         keyword.setForeground(QColor("#569CD6"))
         keyword.setFontWeight(QFont.Bold)
-        for word in ("typedef", "struct", "union", "enum", "const", "volatile", "unsigned", "signed", "char", "short", "int", "long", "float", "double", "void"):
+        for word in (
+            "typedef", "struct", "union", "enum", "const", "volatile", "static", "extern",
+            "unsigned", "signed", "char", "short", "int", "long", "float", "double", "void",
+            "if", "else", "for", "while", "switch", "case", "return", "sizeof",
+        ):
             self.rules.append((re.compile(rf"\b{word}\b"), keyword))
+        type_format = QTextCharFormat()
+        type_format.setForeground(QColor("#4EC9B0"))
+        self.rules.append((re.compile(r"\b(?:u?int(?:8|16|32|64)_t|[us](?:8|16|32|64)|bool|size_t)\b"), type_format))
         number = QTextCharFormat()
         number.setForeground(QColor("#B5CEA8"))
         self.rules.append((re.compile(r"\b(?:0x[0-9A-Fa-f]+|\d+)\b"), number))
-        comment = QTextCharFormat()
-        comment.setForeground(QColor("#6A9955"))
-        self.rules.append((re.compile(r"//.*$"), comment))
+        string_format = QTextCharFormat()
+        string_format.setForeground(QColor("#CE9178"))
+        self.rules.append((re.compile(r'"(?:\\.|[^"\\])*"'), string_format))
+        preprocessor = QTextCharFormat()
+        preprocessor.setForeground(QColor("#C586C0"))
+        self.rules.append((re.compile(r"^\s*#.*$"), preprocessor))
+        self.comment_format = QTextCharFormat()
+        self.comment_format.setForeground(QColor("#6A9955"))
+        self.rules.append((re.compile(r"//.*$"), self.comment_format))
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802
         for pattern, text_format in self.rules:
             for match in pattern.finditer(text):
                 self.setFormat(match.start(), match.end() - match.start(), text_format)
+        self.setCurrentBlockState(0)
+        start = 0 if self.previousBlockState() == 1 else text.find("/*")
+        while start >= 0:
+            end = text.find("*/", start + 2)
+            if end < 0:
+                self.setCurrentBlockState(1)
+                length = len(text) - start
+            else:
+                length = end - start + 2
+            self.setFormat(start, length, self.comment_format)
+            if end < 0:
+                break
+            start = text.find("/*", start + length)
 
 
 class EepromSourceSettingsDialog(QDialog):
-    HEADERS = ["아이템 표시명", "소스 유형", "GitHub 주소 / 로컬 폴더", "브랜치", "분석 하위 폴더", "용량", "페이지", "자동", "주기(분)"]
+    HEADERS = ["아이템 표시명", "소스 유형", "GitHub 주소 / 로컬 폴더", "브랜치", "용량", "페이지", "자동", "주기(분)"]
 
     def __init__(self, configs: list[EepromSourceConfig], current_root: str, parent=None) -> None:
         super().__init__(parent)
@@ -210,7 +237,7 @@ class EepromSourceSettingsDialog(QDialog):
         title = QLabel("AT24C128 프로젝트 소스")
         title.setStyleSheet("font-size:22px; font-weight:600; color:#FFFFFF;")
         help_label = QLabel(
-            "GitHub 저장소 또는 이 PC의 로컬 펌웨어 폴더를 등록합니다. 자동 동기화는 변경된 경우에만 다시 분석합니다. 로컬 폴더는 사용자 설정에만 저장되며 배포 기본값에는 포함되지 않습니다."
+            "GitHub 저장소 또는 이 PC의 로컬 펌웨어 폴더를 등록합니다. 저장소/폴더 아래의 모든 .c/.h 파일을 자동 검색하며 변경된 경우에만 다시 분석합니다. 로컬 폴더는 사용자 설정에만 저장됩니다."
         )
         help_label.setObjectName("help")
         help_label.setWordWrap(True)
@@ -260,7 +287,7 @@ class EepromSourceSettingsDialog(QDialog):
         values = [
             config.display_name, "로컬 폴더" if config.is_local else "GitHub",
             config.repository_url, "-" if config.is_local else config.branch,
-            config.subdirectory, str(config.capacity), str(config.page_size),
+            str(config.capacity), str(config.page_size),
             "", str(config.refresh_minutes),
         ]
         for column, value in enumerate(values):
@@ -272,7 +299,7 @@ class EepromSourceSettingsDialog(QDialog):
                 item.setForeground(QColor("#69C0F0" if not config.is_local else "#8BD49C"))
             if column == 3 and config.is_local:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            if column == 7:
+            if column == 6:
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if config.auto_refresh else Qt.Unchecked)
             self.table.setItem(row, column, item)
@@ -306,9 +333,9 @@ class EepromSourceSettingsDialog(QDialog):
                 id=str(self.table.item(row, 0).data(Qt.UserRole) or ""),
                 display_name=text(0), source_type="local" if text(1) == "로컬 폴더" else "github",
                 repository_url=text(2), branch="main" if text(1) == "로컬 폴더" else (text(3) or "main"),
-                subdirectory=text(4), capacity=int(text(5)), page_size=int(text(6)),
-                auto_refresh=self.table.item(row, 7).checkState() == Qt.Checked,
-                refresh_minutes=int(text(8)),
+                subdirectory="", capacity=int(text(4)), page_size=int(text(5)),
+                auto_refresh=self.table.item(row, 6).checkState() == Qt.Checked,
+                refresh_minutes=int(text(7)),
             ))
         return values
 
@@ -355,9 +382,16 @@ class EepromMapDialog(QDialog):
         self._checking_only = False
         self.cache_root = Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)) / "eeprom-repositories"
         self.setWindowTitle("AT24C128 EEPROM 메모리 맵")
-        self.resize(1360, 860)
-        self.setMinimumSize(980, 650)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        self.setSizeGripEnabled(True)
+        self.resize(1540, 920)
+        self.setMinimumSize(1100, 700)
         self._build_ui()
+        self._restore_splitter_sizes()
+        self._startup_window_mode = restore_window_state(
+            self, self.settings, "eepromMapWindow", (1540, 920)
+        )
+        QTimer.singleShot(0, self._apply_saved_window_mode)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._automatic_refresh)
         self._reload_combo()
@@ -386,6 +420,13 @@ class EepromMapDialog(QDialog):
             QPlainTextEdit { background:#0E1418; color:#DCE5EB; border:1px solid #33404A; selection-background-color:rgba(20,124,184,130); }
             QProgressBar { background:#202830; color:#FFFFFF; border:1px solid #3A4650; text-align:center; min-height:18px; }
             QProgressBar::chunk { background:#1789C9; }
+            QSplitter::handle { background:#26323B; }
+            QSplitter::handle:hover { background:#1683C5; }
+            QScrollBar:vertical { background:#11171C; width:13px; margin:0; }
+            QScrollBar::handle:vertical { background:#485866; min-height:30px; border-radius:5px; margin:2px; }
+            QScrollBar::handle:vertical:hover { background:#617587; }
+            QScrollBar:horizontal { background:#11171C; height:13px; margin:0; }
+            QScrollBar::handle:horizontal { background:#485866; min-width:30px; border-radius:5px; margin:2px; }
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -410,6 +451,10 @@ class EepromMapDialog(QDialog):
         configure = QPushButton("소스 설정…")
         configure.clicked.connect(self.open_settings)
         top.addWidget(configure)
+        self.fullscreen_button = QPushButton("전체 화면")
+        self.fullscreen_button.setShortcut("F11")
+        self.fullscreen_button.clicked.connect(self._toggle_fullscreen)
+        top.addWidget(self.fullscreen_button)
         layout.addLayout(top)
 
         cards = QHBoxLayout()
@@ -424,67 +469,140 @@ class EepromMapDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.hide()
         layout.addWidget(self.progress)
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
+        self.content_splitter = QSplitter(Qt.Horizontal)
+        self.content_splitter.setHandleWidth(7)
+        self.content_splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.content_splitter, 1)
 
-        map_page = QWidget()
-        map_layout = QVBoxLayout(map_page)
+        self.left_splitter = QSplitter(Qt.Vertical)
+        self.left_splitter.setHandleWidth(7)
+        self.left_splitter.setChildrenCollapsible(False)
+        map_panel = QFrame()
+        map_panel.setFrameShape(QFrame.StyledPanel)
+        map_layout = QVBoxLayout(map_panel)
         map_layout.setContentsMargins(8, 8, 8, 8)
+        map_title = QLabel("EEPROM 물리 페이지 맵")
+        map_title.setStyleSheet("font-size:14px; font-weight:600; color:#F2F6F8;")
+        map_layout.addWidget(map_title)
         legend = QLabel("■ 사용 페이지    ■ 중복/충돌    ■ 선택 페이지    ■ 미사용")
         legend.setStyleSheet("color:#AAB6C0;")
         map_layout.addWidget(legend)
         self.canvas = MemoryMapCanvas()
         self.canvas.pageSelected.connect(self._select_page)
-        map_layout.addWidget(self.canvas)
+        map_layout.addWidget(self.canvas, 1)
+        self.left_splitter.addWidget(map_panel)
+
+        region_panel = QFrame()
+        region_layout = QVBoxLayout(region_panel)
+        region_layout.setContentsMargins(8, 8, 8, 8)
+        region_title = QLabel("메모리 할당 및 접근 목록")
+        region_title.setStyleSheet("font-size:14px; font-weight:600; color:#F2F6F8;")
+        region_layout.addWidget(region_title)
         self.region_table = QTableWidget(0, 12)
         self.region_table.setHorizontalHeaderLabels([
             "페이지", "시작 주소", "끝 주소", "영역/기호", "구조체", "Payload", "물리 할당",
             "여유", "접근", "상태", "소스", "행",
         ])
         self.region_table.setAlternatingRowColors(True)
+        self.region_table.verticalHeader().hide()
         self.region_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.region_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.region_table.itemSelectionChanged.connect(self._region_selected)
         self.region_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.region_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.region_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.Stretch)
-        map_layout.addWidget(self.region_table, 1)
-        self.tabs.addTab(map_page, "메모리 맵")
+        region_layout.addWidget(self.region_table, 1)
+        self.left_splitter.addWidget(region_panel)
+        self.left_splitter.setStretchFactor(0, 1)
+        self.left_splitter.setStretchFactor(1, 1)
+        self.left_splitter.setSizes([410, 360])
 
-        structure_page = QWidget()
-        structure_layout = QVBoxLayout(structure_page)
+        self.right_splitter = QSplitter(Qt.Vertical)
+        self.right_splitter.setHandleWidth(7)
+        self.right_splitter.setChildrenCollapsible(False)
+        structure_panel = QFrame()
+        structure_layout = QVBoxLayout(structure_panel)
         structure_layout.setContentsMargins(8, 8, 8, 8)
-        splitter = QSplitter(Qt.Vertical)
+        structure_title = QLabel("감지된 저장 구조체")
+        structure_title.setStyleSheet("font-size:14px; font-weight:600; color:#F2F6F8;")
+        structure_layout.addWidget(structure_title)
         self.structure_table = QTableWidget(0, 6)
         self.structure_table.setHorizontalHeaderLabels(["구조체/Union", "크기", "필드 수", "정렬", "파일", "행"])
         self.structure_table.setAlternatingRowColors(True)
+        self.structure_table.verticalHeader().hide()
         self.structure_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.structure_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.structure_table.itemSelectionChanged.connect(self._structure_selected)
         self.structure_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.structure_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        splitter.addWidget(self.structure_table)
+        structure_layout.addWidget(self.structure_table, 1)
+        self.right_splitter.addWidget(structure_panel)
         preview_frame = QFrame()
         preview_layout = QVBoxLayout(preview_frame)
-        preview_layout.setContentsMargins(0, 4, 0, 0)
+        preview_layout.setContentsMargins(8, 8, 8, 8)
         self.structure_caption = QLabel("구조체를 선택하면 원본 C 선언을 표시합니다.")
         self.structure_caption.setStyleSheet("font-weight:600; color:#CFE8F7; padding:3px;")
+        preview_layout.addWidget(self.structure_caption)
+        preview_tabs = QTabWidget()
         self.code_preview = QPlainTextEdit()
         self.code_preview.setReadOnly(True)
         self.code_preview.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.code_preview.setFont(QFont("Cascadia Mono", 10))
         self.highlighter = CDeclarationHighlighter(self.code_preview.document())
-        preview_layout.addWidget(self.structure_caption)
-        preview_layout.addWidget(self.code_preview, 1)
-        splitter.addWidget(preview_frame)
-        splitter.setSizes([300, 330])
-        structure_layout.addWidget(splitter)
-        self.tabs.addTab(structure_page, "저장 구조체")
-
+        preview_tabs.addTab(self.code_preview, "C 구조체 선언")
         self.warning_view = QPlainTextEdit()
         self.warning_view.setReadOnly(True)
         self.warning_view.setFont(QFont("Cascadia Mono", 9))
-        self.tabs.addTab(self.warning_view, "검토 및 분석 근거")
+        preview_tabs.addTab(self.warning_view, "검토 및 분석 근거")
+        preview_layout.addWidget(preview_tabs, 1)
+        self.right_splitter.addWidget(preview_frame)
+        self.right_splitter.setStretchFactor(0, 1)
+        self.right_splitter.setStretchFactor(1, 2)
+        self.right_splitter.setSizes([290, 480])
+
+        self.content_splitter.addWidget(self.left_splitter)
+        self.content_splitter.addWidget(self.right_splitter)
+        self.content_splitter.setStretchFactor(0, 1)
+        self.content_splitter.setStretchFactor(1, 1)
+        self.content_splitter.setSizes([760, 700])
+
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self.fullscreen_button.setText("전체 화면")
+        else:
+            self.showFullScreen()
+            self.fullscreen_button.setText("전체 화면 종료")
+
+    def _apply_saved_window_mode(self) -> None:
+        if self._startup_window_mode == "fullscreen":
+            self.showFullScreen()
+            self.fullscreen_button.setText("전체 화면 종료")
+        elif self._startup_window_mode == "maximized":
+            self.showMaximized()
+
+    def _restore_splitter_sizes(self) -> None:
+        for splitter, key in (
+            (self.content_splitter, "eepromMapWindow/contentSizes"),
+            (self.left_splitter, "eepromMapWindow/leftSizes"),
+            (self.right_splitter, "eepromMapWindow/rightSizes"),
+        ):
+            raw = self.settings.value(key, [])
+            values = [raw] if isinstance(raw, (int, str)) else list(raw or [])
+            try:
+                sizes = [int(value) for value in values]
+            except (TypeError, ValueError):
+                continue
+            if len(sizes) == splitter.count() and all(value >= 0 for value in sizes):
+                splitter.setSizes(sizes)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.timer.stop()
+        self.settings.setValue("eepromMapWindow/contentSizes", self.content_splitter.sizes())
+        self.settings.setValue("eepromMapWindow/leftSizes", self.left_splitter.sizes())
+        self.settings.setValue("eepromMapWindow/rightSizes", self.right_splitter.sizes())
+        save_window_state(self, self.settings, "eepromMapWindow")
+        super().closeEvent(event)
 
     def _reload_combo(self, preferred_id: str = "") -> None:
         current = preferred_id or self.source_combo.currentData()

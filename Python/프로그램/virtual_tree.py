@@ -44,14 +44,14 @@ class StickyHeader(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#D7E5EF"))
-        painter.setPen(QPen(QColor("#9EB1C0"), 1))
+        painter.fillRect(self.rect(), QColor("#202A32"))
+        painter.setPen(QPen(QColor("#3D4B56"), 1))
         for depth in range(self._max_depth):
             x = depth * COLUMN_WIDTH - self._offset
             rect = QRect(x, 0, COLUMN_WIDTH, self.height())
-            painter.fillRect(rect, QColor("#CBDDE9" if depth % 2 else "#D7E5EF"))
+            painter.fillRect(rect, QColor("#25323B" if depth % 2 else "#202A32"))
             painter.drawLine(x + COLUMN_WIDTH - 1, 0, x + COLUMN_WIDTH - 1, self.height())
-            painter.setPen(QColor("#17324D"))
+            painter.setPen(QColor("#E3EBF0"))
             title = f"{depth + 1}단계"
             name = f"  {self._path[depth]}()" if depth < len(self._path) else ""
             action = self._actions[depth] if depth < len(self._actions) else ""
@@ -59,16 +59,16 @@ class StickyHeader(QWidget):
             action_width = painter.fontMetrics().horizontalAdvance(action_text) + 16 if action_text else 0
             if action_text:
                 action_rect = QRect(x + COLUMN_WIDTH - action_width - 7, 7, action_width, self.height() - 14)
-                painter.setBrush(QColor("#AFC8D8"))
+                painter.setBrush(QColor("#244F68"))
                 painter.setPen(Qt.NoPen)
                 painter.drawRoundedRect(action_rect, 4, 4)
-                painter.setPen(QColor("#17324D"))
+                painter.setPen(QColor("#E4F3FC"))
                 painter.drawText(action_rect, Qt.AlignCenter, action_text)
             available = COLUMN_WIDTH - 16 - action_width - (8 if action_width else 0)
             text = painter.fontMetrics().elidedText(title + name, Qt.ElideRight, max(20, available))
-            painter.setPen(QColor("#17324D"))
+            painter.setPen(QColor("#E3EBF0"))
             painter.drawText(x + 8, 0, max(20, available), self.height(), Qt.AlignVCenter | Qt.AlignLeft, text)
-            painter.setPen(QPen(QColor("#9EB1C0"), 1))
+            painter.setPen(QPen(QColor("#3D4B56"), 1))
         painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -730,7 +730,7 @@ class VirtualCallBody(QAbstractScrollArea):
         super().mouseDoubleClickEvent(event)
 
     def _paint_connections(self, painter: QPainter, x_offset: int, y_offset: int) -> None:
-        painter.setPen(QPen(QColor("#7697AE"), 1))
+        painter.setPen(QPen(QColor("#5C8BA8"), 1))
         viewport_height = self.viewport().height()
         for parent_index, child_indices in self._children.items():
             if not child_indices:
@@ -754,9 +754,9 @@ class VirtualCallBody(QAbstractScrollArea):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self.viewport())
-        painter.fillRect(self.viewport().rect(), QColor("#FFFFFF"))
+        painter.fillRect(self.viewport().rect(), QColor("#10161B"))
         if not self._view.rows:
-            painter.setPen(QColor("#6B7D8C"))
+            painter.setPen(QColor("#82939F"))
             painter.drawText(self.viewport().rect(), Qt.AlignCenter, "분석할 폴더를 선택하세요.")
             return
         x_offset = self.horizontalScrollBar().value()
@@ -766,8 +766,8 @@ class VirtualCallBody(QAbstractScrollArea):
 
         for depth in range(self._view.max_depth):
             x = depth * COLUMN_WIDTH - x_offset
-            painter.fillRect(x, 0, COLUMN_WIDTH, self.viewport().height(), QColor("#EDF4F8" if depth % 2 else "#F8FBFD"))
-            painter.setPen(QColor("#BDCBD6"))
+            painter.fillRect(x, 0, COLUMN_WIDTH, self.viewport().height(), QColor("#151E25" if depth % 2 else "#11181E"))
+            painter.setPen(QColor("#2F3C45"))
             painter.drawLine(x + COLUMN_WIDTH - 1, 0, x + COLUMN_WIDTH - 1, self.viewport().height())
 
         for merged_index in self._merged_indices:
@@ -777,8 +777,8 @@ class VirtualCallBody(QAbstractScrollArea):
             if rect.bottom() < 0:
                 continue
             depth = self._view.rows[merged_index].depth
-            painter.fillRect(rect, QColor("#EDF4F8" if depth % 2 == 0 else "#F8FBFD"))
-            painter.setPen(QPen(QColor("#BDCBD6"), 1))
+            painter.fillRect(rect, QColor("#151E25" if depth % 2 == 0 else "#11181E"))
+            painter.setPen(QPen(QColor("#2F3C45"), 1))
             painter.drawLine(rect.left() - 1, rect.top() - 1, rect.right(), rect.top() - 1)
             painter.drawLine(rect.left(), rect.bottom() - 1, rect.right(), rect.bottom() - 1)
             painter.drawLine(rect.left() - 1, rect.top() - 1, rect.left() - 1, rect.bottom() - 1)
@@ -789,7 +789,7 @@ class VirtualCallBody(QAbstractScrollArea):
             selected = self._view.rows[self._current_index]
             if selected.kind == "function":
                 selected_rect = self._cell_rect(self._current_index, x_offset, y_offset)
-                painter.fillRect(selected_rect.adjusted(1, 1, -2, -2), QColor(22, 131, 216, 38))
+                painter.fillRect(selected_rect.adjusted(1, 1, -2, -2), QColor(28, 132, 195, 72))
 
         self._paint_connections(painter, x_offset, y_offset)
 
@@ -799,35 +799,35 @@ class VirtualCallBody(QAbstractScrollArea):
             top = self._offsets[index] - y_offset
             height = self._row_height(row)
             if row.kind == "section":
-                color = "#FFF0D5" if row.state == "interrupt" else "#E8EDF1" if row.state in {"independent", "search"} else "#DFEEFA"
+                color = "#4A3420" if row.state == "interrupt" else "#202A31" if row.state in {"independent", "search"} else "#173247"
                 painter.fillRect(0, top, self.viewport().width(), height, QColor(color))
-                painter.setPen(QColor("#8FA6B8"))
+                painter.setPen(QColor("#475966"))
                 painter.drawLine(0, top + height - 1, self.viewport().width(), top + height - 1)
-                painter.setPen(QColor("#244B68"))
+                painter.setPen(QColor("#E8F0F4"))
                 painter.drawText(12, top, self.viewport().width() - 24, height, Qt.AlignVCenter | Qt.AlignLeft, row.title)
             elif row.kind == "function":
                 x = (row.depth - 1) * COLUMN_WIDTH - x_offset
                 source_index = self._visible_source_indices[index]
                 has_children = self._source_has_children(source_index)
                 line_start = x + (COLUMN_WIDTH if self._children.get(index) else 0)
-                painter.setPen(QColor("#D6E0E7"))
+                painter.setPen(QColor("#2B3740"))
                 painter.drawLine(line_start, top + height - 1, self.viewport().width(), top + height - 1)
                 if has_children:
                     box_x = x + 9
                     box_y = top + (height - 11) // 2
-                    painter.setBrush(QColor("#FFFFFF"))
-                    painter.setPen(QPen(QColor("#7697AE"), 1))
+                    painter.setBrush(QColor("#152028"))
+                    painter.setPen(QPen(QColor("#6E9AB5"), 1))
                     painter.drawRect(box_x, box_y, 10, 10)
                     painter.drawLine(box_x + 2, box_y + 5, box_x + 8, box_y + 5)
                     if row.node_key in self._collapsed:
                         painter.drawLine(box_x + 5, box_y + 2, box_x + 5, box_y + 8)
-                color = QColor("#172B3A")
+                color = QColor("#DCE6EC")
                 if row.state == "external":
-                    color = QColor("#9A6700")
+                    color = QColor("#E5B45F")
                 elif row.state == "cycle":
-                    color = QColor("#B42318")
+                    color = QColor("#FF706A")
                 elif row.state == "safety_limit":
-                    color = QColor("#805500")
+                    color = QColor("#E0A955")
                 full_text = self._display_text(row)
                 text_width = max(1, COLUMN_WIDTH - 40)
                 visible_text = painter.fontMetrics().elidedText(full_text, Qt.ElideRight, text_width)
@@ -843,16 +843,16 @@ class VirtualCallBody(QAbstractScrollArea):
                 if keys:
                     rect = self._child_control_rect(control_index, x_offset, y_offset)
                     if rect.bottom() >= 0 and rect.top() <= self.viewport().height():
-                        painter.setBrush(QColor("#D7E5EF"))
-                        painter.setPen(QPen(QColor("#7697AE"), 1))
+                        painter.setBrush(QColor("#244F68"))
+                        painter.setPen(QPen(QColor("#5F91AF"), 1))
                         painter.drawRoundedRect(rect, 4, 4)
-                        painter.setPen(QColor("#17324D"))
+                        painter.setPen(QColor("#E5F2FA"))
                         painter.drawText(rect, Qt.AlignCenter, f"모두 {action}")
             control_index += 1
 
         if not selected_rect.isNull():
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor("#1683D8"), 2))
+            painter.setPen(QPen(QColor("#38A7EA"), 2))
             painter.drawRect(selected_rect.adjusted(1, 1, -2, -2))
 
 

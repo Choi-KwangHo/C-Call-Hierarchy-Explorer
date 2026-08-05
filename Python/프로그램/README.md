@@ -2,12 +2,12 @@
 
 `.c`와 `.h` 파일을 Tree-sitter로 빠르게 파싱하고, libclang으로 실제 심볼 참조를 보강한 뒤 PySide6 가상 스크롤 UI에 호출 단계를 표시합니다.
 
-현재 개발 소스와 배포 버전은 `1.3.1`입니다. `Python\배포\C Call Hierarchy Explorer 1.3.1` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
+현재 개발 소스와 배포 버전은 `1.3.2`입니다. `Python\배포\C Call Hierarchy Explorer 1.3.2` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
 
 ## 설치 배포본
 
-- `C-Call-Hierarchy-Explorer-Setup-1.3.1.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
-- `C-Call-Hierarchy-Explorer-Portable-1.3.1.exe`: 설치 없이 실행하는 포터블 버전입니다.
+- `C-Call-Hierarchy-Explorer-Setup-1.3.2.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
+- `C-Call-Hierarchy-Explorer-Portable-1.3.2.exe`: 설치 없이 실행하는 포터블 버전입니다.
 - Windows 설정의 **설치된 앱**에서 제거할 수 있습니다.
 - `packaging\build_release.ps1`은 실행 파일 진단, 설치 파일 생성, SHA-256 파일 생성을 자동으로 수행합니다.
 
@@ -65,7 +65,10 @@ py -3 -m venv .venv
 16. 생성되는 `CCH_Trace/cch_trace.c/.h`는 Task/ISR/함수/오류 이벤트용 고정 크기 링 버퍼를 제공합니다. HardFault 계측점은 예외 레지스터와 최근 실행 이력을 `.noinit`에 보존하고 SWO ITM 포트 0으로 **최근 → 과거 순서**로 출력하며, 다음 부팅에서 `CCH_PrintRetainedFault()`로 재출력할 수 있습니다. HardFault 경로는 동적 메모리와 일반 `printf`에 의존하지 않고 SWO 대기 시간을 제한합니다.
 17. Trace 센터의 **I/O Timeline**은 COM 포트의 `CCH|시간|이벤트|Context|값` 로그를 실시간 수신하고, IAR Event Log/TSV와 저장된 Trace 로그를 가져와 실행 문맥별 타임라인 사각형·이벤트 표·원문 터미널로 함께 표시합니다.
 18. **EEPROM → AT24C128 메모리 맵 열기…** (`Ctrl+M`)는 등록한 GitHub 브랜치의 `.c/.h`를 읽어 `EEPROM_ADDR_PAGE*`, `EEPROM_Read/Write`, AT24Cxx 원시 접근과 `sizeof(구조체)`를 교차 분석합니다. 16,384바이트/64바이트 페이지 맵, 물리 할당량, payload 크기, 페이지 여유 공간, 충돌·범위 초과, 관련 구조체를 별도 View에 표시합니다. 구조체 행을 선택하면 아래 CODE 미리보기에서 원본 C 선언을 구문 색상과 함께 확인할 수 있습니다.
-19. **설정 → EEPROM 소스 및 동기화 설정…**에서 아이템 표시명, GitHub 저장소/브랜치 URL 또는 로컬 펌웨어 폴더, 분석 하위 폴더, EEPROM 용량·페이지 크기와 1~10분 자동 동기화 주기를 관리합니다. GitHub 자동 동기화는 원격 commit 변경 시에만 shallow fetch와 재분석을 수행하며, 로컬 폴더는 `.c/.h`의 경로·수정 시각·크기가 달라진 경우에만 다시 분석합니다. 사용자 설정은 AppData INI에 유지됩니다. 개발 소스에서 `다음 배포 기본값에도 반영`을 선택해도 PC 전용 로컬 경로는 자동 제외되고 GitHub 항목만 `eeprom_sources.json`에 기록됩니다. 기본 항목으로 `Esol-Lab/Susan-Heavy-duty-lift-48V`의 `48V_HDL/App`을 등록합니다.
+19. **설정 → EEPROM 소스 및 동기화 설정…**에서 아이템 표시명, GitHub 저장소/브랜치 URL 또는 로컬 펌웨어 폴더, EEPROM 용량·페이지 크기와 1~10분 자동 동기화 주기를 관리합니다. 별도의 하위 폴더 설정 없이 등록 위치 아래의 모든 `.c/.h`를 검색합니다. GitHub는 원격 commit 변경 시에만 다시 분석하고 로컬 폴더는 소스 메타데이터가 달라진 경우에만 다시 분석합니다. 사용자 설정은 AppData INI에 유지됩니다. 개발 소스에서 `다음 배포 기본값에도 반영`을 선택해도 PC 전용 로컬 경로는 자동 제외되고 GitHub 항목만 `eeprom_sources.json`에 기록됩니다. 기본 항목으로 `Esol-Lab/Susan-Heavy-duty-lift-48V` 저장소 전체를 등록합니다.
+20. EEPROM View는 왼쪽의 물리 페이지 맵·할당 목록과 오른쪽의 저장 구조체 목록·C 선언 CODE 보기를 한 화면에 배치합니다. 가운데와 상하 분할선을 마우스로 끌어 영역을 조절할 수 있고 각 목록과 CODE 보기는 독립적으로 스크롤됩니다. `F11` 또는 **전체 화면** 버튼으로 전체 화면을 전환할 수 있습니다.
+21. 메인 호출 트리, 파일/함수 목록, CODE 미리보기, 메뉴와 도구 모음은 통합 다크 테마를 사용합니다. 호출 단계 열, 연결선, 펼치기 제어, 선택 셀, main/ISR/독립 루트 구역과 부모·내부 호출·외부 호출 CODE 강조색은 어두운 배경에서도 구분되도록 조정됩니다.
+22. 메인 창과 EEPROM View는 모니터 구성(수·이름·해상도·배치)이 같으면 마지막 일반 창 위치·크기와 최대화/전체 화면 상태를 복원합니다. 모니터 구성이 바뀌었거나 저장 좌표가 화면 밖이면 상태를 초기화하고 주 모니터 중앙의 기본 크기로 엽니다. EEPROM 내부 분할 영역의 크기도 함께 기억합니다.
 
 ## 동작 및 성능
 

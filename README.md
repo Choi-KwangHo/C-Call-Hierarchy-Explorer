@@ -72,3 +72,7 @@ cscript //nologo tests\test_analyzer.js
 PySide6·Tree-sitter·libclang을 사용하는 새 버전은 [Python/프로그램/README.md](Python/프로그램/README.md)를 참고하십시오. `Python/프로그램/install.bat`로 설치하고 `run.bat`로 실행할 수 있습니다.
 
 Python 버전에는 GitHub 브랜치 또는 로컬 펌웨어 폴더의 변경을 확인하고 AT24C128의 페이지 주소, 물리 사용량, 저장 payload와 관련 C 구조체 선언을 연결해 표시하는 **EEPROM 메모리 맵 View**가 포함됩니다. 로컬 폴더 등록 정보는 사용자 PC에만 저장되며 배포 기본 목록에서는 자동 제외됩니다.
+
+EEPROM View는 전체 `.c/.h` 검색 결과를 물리 페이지 맵·할당표·구조체 목록·원본 C 선언으로 한 화면에 보여주며, 모든 영역은 마우스로 크기를 조절할 수 있습니다. 메인 호출 트리와 CODE 미리보기 역시 동일한 다크 테마와 고대비 함수 분류 색상을 사용합니다.
+
+메인 창과 EEPROM View의 위치·크기·최대화/전체 화면 및 EEPROM 분할 비율은 다음 실행에 복원됩니다. 다중 모니터 연결 구성이나 해상도 배치가 달라지면 화면 밖 복원을 방지하기 위해 주 모니터 중앙의 기본 크기로 안전하게 초기화됩니다.

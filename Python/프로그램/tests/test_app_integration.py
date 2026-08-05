@@ -240,7 +240,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.3.1")
+        self.assertEqual(APP_VERSION, "1.3.2")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
@@ -340,7 +340,7 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertIn("외부/미확인 호출", summary)
             self.assertIn("missing_api()", summary)
             colors = {selection.format.background().color().name() for selection in window.source_view.extraSelections()}
-            self.assertTrue({"#b7ddf7", "#cdeccf", "#ffe2a8"}.issubset(colors))
+            self.assertTrue({"#174564", "#1e4a31", "#5a4019"}.issubset(colors))
             window.close()
 
     def test_project_cache_restores_tree_before_metadata_refresh(self) -> None:
