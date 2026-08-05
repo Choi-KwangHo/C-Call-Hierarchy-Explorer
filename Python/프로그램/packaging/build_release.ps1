@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "C Call Hierarchy Explorer"
-$appVersion = "1.2.2"
+$appVersion = "1.3.0"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -68,6 +68,7 @@ try {
         --icon $icon `
         --version-file $versionInfo `
         --add-data "$icon;assets" `
+        --add-data "eeprom_sources.json;." `
         --collect-all tree_sitter_c `
         --collect-all clang `
         app.py
@@ -82,6 +83,7 @@ try {
         --icon $icon `
         --version-file $versionInfo `
         --add-data "$icon;assets" `
+        --add-data "eeprom_sources.json;." `
         --collect-all tree_sitter_c `
         --collect-all clang `
         app.py

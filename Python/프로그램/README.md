@@ -2,12 +2,12 @@
 
 `.c`와 `.h` 파일을 Tree-sitter로 빠르게 파싱하고, libclang으로 실제 심볼 참조를 보강한 뒤 PySide6 가상 스크롤 UI에 호출 단계를 표시합니다.
 
-현재 개발 소스와 배포 버전은 `1.2.2`입니다. `Python\배포\C Call Hierarchy Explorer 1.2.2` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
+현재 개발 소스와 배포 버전은 `1.3.0`입니다. `Python\배포\C Call Hierarchy Explorer 1.3.0` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
 
 ## 설치 배포본
 
-- `C-Call-Hierarchy-Explorer-Setup-1.2.2.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
-- `C-Call-Hierarchy-Explorer-Portable-1.2.2.exe`: 설치 없이 실행하는 포터블 버전입니다.
+- `C-Call-Hierarchy-Explorer-Setup-1.3.0.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
+- `C-Call-Hierarchy-Explorer-Portable-1.3.0.exe`: 설치 없이 실행하는 포터블 버전입니다.
 - Windows 설정의 **설치된 앱**에서 제거할 수 있습니다.
 - `packaging\build_release.ps1`은 실행 파일 진단, 설치 파일 생성, SHA-256 파일 생성을 자동으로 수행합니다.
 
@@ -64,6 +64,8 @@ py -3 -m venv .venv
 15. Trace 센터의 **테스트 포인트**에서는 파일·함수·삽입 행·이벤트·IAR ITM 채널·값 식을 사용자가 직접 지정합니다. **변경 미리보기**는 소스를 수정하지 않으며, 미리보기 뒤 확인 대화상자를 승인한 경우에만 선택 위치에 관리 마커와 계측 코드를 삽입합니다. IAR ITM Event를 포함한 어떤 계측점도 임의 위치에 자동 삽입하지 않습니다. 관리 마커가 변경된 경우에는 자동 제거하지 않아 사용자 코드를 덮어쓰지 않습니다.
 16. 생성되는 `CCH_Trace/cch_trace.c/.h`는 Task/ISR/함수/오류 이벤트용 고정 크기 링 버퍼를 제공합니다. HardFault 계측점은 예외 레지스터와 최근 실행 이력을 `.noinit`에 보존하고 SWO ITM 포트 0으로 **최근 → 과거 순서**로 출력하며, 다음 부팅에서 `CCH_PrintRetainedFault()`로 재출력할 수 있습니다. HardFault 경로는 동적 메모리와 일반 `printf`에 의존하지 않고 SWO 대기 시간을 제한합니다.
 17. Trace 센터의 **I/O Timeline**은 COM 포트의 `CCH|시간|이벤트|Context|값` 로그를 실시간 수신하고, IAR Event Log/TSV와 저장된 Trace 로그를 가져와 실행 문맥별 타임라인 사각형·이벤트 표·원문 터미널로 함께 표시합니다.
+18. **EEPROM → AT24C128 메모리 맵 열기…** (`Ctrl+M`)는 등록한 GitHub 브랜치의 `.c/.h`를 읽어 `EEPROM_ADDR_PAGE*`, `EEPROM_Read/Write`, AT24Cxx 원시 접근과 `sizeof(구조체)`를 교차 분석합니다. 16,384바이트/64바이트 페이지 맵, 물리 할당량, payload 크기, 페이지 여유 공간, 충돌·범위 초과, 관련 구조체를 별도 View에 표시합니다. 구조체 행을 선택하면 아래 CODE 미리보기에서 원본 C 선언을 구문 색상과 함께 확인할 수 있습니다.
+19. **설정 → EEPROM 소스 및 동기화 설정…**에서 아이템 표시명, GitHub 저장소 또는 브랜치 URL, 브랜치, 분석 하위 폴더, EEPROM 용량·페이지 크기와 1~10분 자동 동기화 주기를 관리합니다. 자동 동기화는 원격 브랜치 commit을 먼저 확인하고 변경된 경우에만 shallow fetch와 재분석을 수행하므로 매 주기 전체 저장소를 다시 읽지 않습니다. 사용자 설정은 AppData INI에 유지되며 개발 소스에서 `다음 배포 기본값에도 반영`을 선택하면 추적 파일 `eeprom_sources.json`에 기록되어 다음 `release.bat` 배포본에 포함됩니다. 기본 항목으로 `Esol-Lab/Susan-Heavy-duty-lift-48V`의 `48V_HDL/App`을 등록합니다.
 
 ## 동작 및 성능
 
@@ -81,6 +83,8 @@ py -3 -m venv .venv
 - 고정 단계 머리글은 현재 화면에 가장 가까운 호출 경로를 `1단계 main()`, `2단계 App_Task()` 형식으로 유지합니다.
 - 64KB 이상의 전처리기/상수 테이블 밀집 파일은 정지 방지를 위해 선형 C 함수 스캐너로 추출하고, 일반 파일은 Tree-sitter로 분석하며 libclang이 호출 대상을 보강합니다.
 - 독립 루트는 선택된 `main()`에서 도달 가능한 함수를 제외합니다. 인터럽트 루트는 표준 예외 핸들러, `IRQHandler`, `ISR/IRQ` 명명 또는 interrupt 속성이 확인된 프로젝트 함수만 채택하고, Drivers/HAL/CMSIS/SDK/라이브러리·예제·테스트 경로는 제외합니다. 기타 독립 루트는 호출자가 없고 `Task/Thread/Callback/Hook/Worker` 등 명확한 진입점 이름을 가진 비정적 함수만 표시합니다.
+- EEPROM 원격 소스는 사용자 LocalAppData의 앱 전용 `eeprom-repositories` 캐시에 depth 1로 동기화합니다. 사용자 작업 저장소에는 checkout, reset 또는 파일 변경을 수행하지 않으며 GitHub HTTPS 주소와 안전한 브랜치·하위 경로만 허용합니다.
+- EEPROM 구조체 크기는 STM32F103의 일반적인 32비트 ABI 정렬과 명시된 packed 속성을 기준으로 계산합니다. 조건부 컴파일·사용자 지정 packing·외부 타입 때문에 확정할 수 없는 선언은 임의 크기로 단정하지 않고 분석 목록에서 제외하거나 검토 대상으로 남깁니다.
 
 ## 참고
 

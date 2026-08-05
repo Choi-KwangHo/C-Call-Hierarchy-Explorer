@@ -24,6 +24,8 @@ from analyzer import AnalysisResult, AnalyzerSession, CallView, build_call_view
 from project_cache import ProjectCacheStore
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions
 from trace_ui import TraceCenterDialog
+from eeprom_map import load_source_configs, save_source_configs
+from eeprom_ui import EepromMapDialog, EepromSourceSettingsDialog
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
 from update_service import (
@@ -33,8 +35,35 @@ from update_service import (
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.3.0"
 APP_PUBLISHER = "Call Hierarchy Tools"
+
+
+def application_settings() -> QSettings:
+    """Use an AppData INI store and migrate the legacy registry settings once."""
+    requested_format = QSettings.defaultFormat()
+    settings = QSettings(
+        QSettings.IniFormat,
+        QSettings.UserScope,
+        "CCodeTree",
+        "CFunctionCallTree",
+    )
+    # Unit tests and portable smoke tests explicitly redirect the INI path and
+    # must never import the user's real registry values.
+    if requested_format == QSettings.IniFormat or settings.allKeys():
+        return settings
+    legacy = QSettings(
+        QSettings.NativeFormat,
+        QSettings.UserScope,
+        "CCodeTree",
+        "CFunctionCallTree",
+    )
+    for key in legacy.allKeys():
+        settings.setValue(key, legacy.value(key))
+    if legacy.allKeys():
+        settings.setValue("settings/migratedFromRegistry", True)
+        settings.sync()
+    return settings
 
 
 def cleanup_previous_installations(executable: str | Path | None = None) -> list[Path]:
@@ -321,6 +350,7 @@ class MainWindow(QMainWindow):
         self._refresh_after_cache = False
         self._startup_update_checked = False
         self.trace_center: TraceCenterDialog | None = None
+        self.eeprom_view: EepromMapDialog | None = None
         self._restoring_state = True
         self._cache_dirty = False
         self._cache_generation = 0
@@ -328,7 +358,7 @@ class MainWindow(QMainWindow):
         self.show_external_functions = True
         self.exclude_macro_functions = True
         self.cache_store = ProjectCacheStore()
-        self.settings = QSettings("CCodeTree", "CFunctionCallTree")
+        self.settings = application_settings()
         stored = self.settings.value("recentFolders", [])
         stored_folders = [stored] if isinstance(stored, str) and stored else list(stored or [])
         self.recent_folders = sanitize_recent_folders([str(value) for value in stored_folders])
@@ -371,12 +401,25 @@ class MainWindow(QMainWindow):
         project_settings_action.setShortcut("Ctrl+,")
         project_settings_action.triggered.connect(self._open_project_settings)
         settings_menu.addAction(project_settings_action)
+        eeprom_settings_action = QAction("EEPROM 소스 및 동기화 설정…", self)
+        eeprom_settings_action.triggered.connect(self._open_eeprom_settings)
+        settings_menu.addAction(eeprom_settings_action)
 
         trace_menu = self.menuBar().addMenu("Trace")
         trace_center_action = QAction("실행 구조 및 Trace 센터…", self)
         trace_center_action.setShortcut("Ctrl+T")
         trace_center_action.triggered.connect(self._open_trace_center)
         trace_menu.addAction(trace_center_action)
+
+        eeprom_menu = self.menuBar().addMenu("EEPROM")
+        eeprom_map_action = QAction("AT24C128 메모리 맵 열기…", self)
+        eeprom_map_action.setShortcut("Ctrl+M")
+        eeprom_map_action.triggered.connect(self._open_eeprom_map)
+        eeprom_menu.addAction(eeprom_map_action)
+        eeprom_menu.addSeparator()
+        eeprom_source_action = QAction("GitHub 소스 및 자동 동기화 설정…", self)
+        eeprom_source_action.triggered.connect(self._open_eeprom_settings)
+        eeprom_menu.addAction(eeprom_source_action)
 
         self.toolbar = QToolBar("주 도구", self)
         self.toolbar.setMovable(False)
@@ -834,6 +877,44 @@ class MainWindow(QMainWindow):
         if self.trace_center is not None:
             self.trace_center.deleteLater()
             self.trace_center = None
+
+    def _open_eeprom_settings(self) -> None:
+        current_root = self.session.root or ""
+        configs = load_source_configs(self.settings, current_root)
+        dialog = EepromSourceSettingsDialog(configs, current_root, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            save_source_configs(
+                self.settings,
+                dialog.configs(),
+                dialog.deploy_default.isChecked(),
+            )
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "배포 기본값 저장",
+                f"사용자 설정은 저장했지만 배포 기본값 파일을 기록하지 못했습니다.\n\n{error}",
+            )
+        if self.eeprom_view is not None:
+            self.eeprom_view.close()
+            self.eeprom_view.deleteLater()
+            self.eeprom_view = None
+        self.status_label.setText("EEPROM 소스 및 자동 동기화 설정을 저장했습니다.")
+
+    def _open_eeprom_map(self) -> None:
+        current_root = self.session.root or ""
+        if self.eeprom_view is None:
+            self.eeprom_view = EepromMapDialog(self.settings, current_root, self)
+            self.eeprom_view.finished.connect(self._eeprom_view_closed)
+        self.eeprom_view.show()
+        self.eeprom_view.raise_()
+        self.eeprom_view.activateWindow()
+
+    def _eeprom_view_closed(self) -> None:
+        if self.eeprom_view is not None:
+            self.eeprom_view.deleteLater()
+            self.eeprom_view = None
 
     def _activate_runtime_function(self, function_id: str) -> None:
         if not self.result:
@@ -1519,6 +1600,8 @@ class MainWindow(QMainWindow):
         self.monitor_timer.stop()
         self.search_timer.stop()
         self.cache_timer.stop()
+        if self.eeprom_view is not None:
+            self.eeprom_view.close()
         if self.busy:
             self.pool.waitForDone()
             QApplication.processEvents()
