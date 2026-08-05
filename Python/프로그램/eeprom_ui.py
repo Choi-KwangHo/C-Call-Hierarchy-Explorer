@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QSyntaxHighlighter, QTe
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
+    QFileDialog, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
     QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -185,7 +185,7 @@ class CDeclarationHighlighter(QSyntaxHighlighter):
 
 
 class EepromSourceSettingsDialog(QDialog):
-    HEADERS = ["아이템 표시명", "GitHub 저장소/브랜치 주소", "브랜치", "분석 하위 폴더", "용량", "페이지", "자동", "주기(분)"]
+    HEADERS = ["아이템 표시명", "소스 유형", "GitHub 주소 / 로컬 폴더", "브랜치", "분석 하위 폴더", "용량", "페이지", "자동", "주기(분)"]
 
     def __init__(self, configs: list[EepromSourceConfig], current_root: str, parent=None) -> None:
         super().__init__(parent)
@@ -198,6 +198,8 @@ class EepromSourceSettingsDialog(QDialog):
             QTableWidget { background:#11161B; alternate-background-color:#171D23; color:#DCE5EC; gridline-color:#33404A; }
             QHeaderView::section { background:#27313A; color:#F2F6F8; padding:7px; border:0; border-right:1px solid #3C4A54; }
             QLineEdit, QSpinBox { background:#10151A; color:#E6EDF3; border:1px solid #46545E; padding:5px; }
+            QComboBox { background:#10151A; color:#E6EDF3; border:1px solid #46545E; padding:5px; }
+            QComboBox QAbstractItemView { background:#11161B; color:#E6EDF3; selection-background-color:#245E82; selection-color:#FFFFFF; }
             QPushButton { background:#2C3740; color:#F3F6F8; border:1px solid #495864; padding:7px 12px; }
             QPushButton:hover { background:#3B4A55; }
             QPushButton#primary { background:#1479B8; border-color:#1479B8; }
@@ -208,7 +210,7 @@ class EepromSourceSettingsDialog(QDialog):
         title = QLabel("AT24C128 프로젝트 소스")
         title.setStyleSheet("font-size:22px; font-weight:600; color:#FFFFFF;")
         help_label = QLabel(
-            "표시명과 GitHub 저장소 또는 /tree/ 브랜치 주소를 등록합니다. 자동 동기화는 선택한 주기로 원격 커밋만 확인하고, 변경된 경우에만 다시 분석합니다."
+            "GitHub 저장소 또는 이 PC의 로컬 펌웨어 폴더를 등록합니다. 자동 동기화는 변경된 경우에만 다시 분석합니다. 로컬 폴더는 사용자 설정에만 저장되며 배포 기본값에는 포함되지 않습니다."
         )
         help_label.setObjectName("help")
         help_label.setWordWrap(True)
@@ -225,14 +227,17 @@ class EepromSourceSettingsDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         for config in configs:
-            self._append(config)
+            self._append(config, select=False)
         layout.addWidget(self.table, 1)
         controls = QHBoxLayout()
-        add = QPushButton("＋ 항목 추가")
-        add.clicked.connect(lambda: self._append(EepromSourceConfig.create("새 EEPROM 항목")))
+        add = QPushButton("＋ GitHub 항목 추가")
+        add.clicked.connect(lambda: self._append(EepromSourceConfig.create("새 EEPROM 항목"), select=True))
+        add_local = QPushButton("＋ 로컬 폴더 추가…")
+        add_local.clicked.connect(self._add_local_folder)
         remove = QPushButton("선택 항목 삭제")
         remove.clicked.connect(self._remove_selected)
         controls.addWidget(add)
+        controls.addWidget(add_local)
         controls.addWidget(remove)
         controls.addStretch(1)
         self.deploy_default = QCheckBox("현재 목록을 다음 배포 기본값에도 반영")
@@ -249,11 +254,12 @@ class EepromSourceSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _append(self, config: EepromSourceConfig) -> None:
+    def _append(self, config: EepromSourceConfig, select: bool = True) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
         values = [
-            config.display_name, config.repository_url, config.branch,
+            config.display_name, "로컬 폴더" if config.is_local else "GitHub",
+            config.repository_url, "-" if config.is_local else config.branch,
             config.subdirectory, str(config.capacity), str(config.page_size),
             "", str(config.refresh_minutes),
         ]
@@ -261,10 +267,31 @@ class EepromSourceSettingsDialog(QDialog):
             item = QTableWidgetItem(value)
             if column == 0:
                 item.setData(Qt.UserRole, config.id)
-            if column == 6:
+            if column == 1:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setForeground(QColor("#69C0F0" if not config.is_local else "#8BD49C"))
+            if column == 3 and config.is_local:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            if column == 7:
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if config.auto_refresh else Qt.Unchecked)
             self.table.setItem(row, column, item)
+        if select:
+            self.table.selectRow(row)
+            self.table.scrollToItem(self.table.item(row, 0))
+
+    def _add_local_folder(self) -> None:
+        start = self.current_root if Path(self.current_root).is_dir() else str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "EEPROM 분석 로컬 폴더 선택", start)
+        if not folder:
+            return
+        root = Path(folder)
+        self._append(EepromSourceConfig.create(
+            root.name or "로컬 EEPROM 프로젝트",
+            source_type="local",
+            repository_url=str(root.resolve()),
+            branch="main",
+        ))
 
     def _remove_selected(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
@@ -277,12 +304,18 @@ class EepromSourceSettingsDialog(QDialog):
             text = lambda column: (self.table.item(row, column).text().strip() if self.table.item(row, column) else "")
             values.append(EepromSourceConfig(
                 id=str(self.table.item(row, 0).data(Qt.UserRole) or ""),
-                display_name=text(0), repository_url=text(1), branch=text(2) or "main",
-                subdirectory=text(3), capacity=int(text(4)), page_size=int(text(5)),
-                auto_refresh=self.table.item(row, 6).checkState() == Qt.Checked,
-                refresh_minutes=int(text(7)),
+                display_name=text(0), source_type="local" if text(1) == "로컬 폴더" else "github",
+                repository_url=text(2), branch="main" if text(1) == "로컬 폴더" else (text(3) or "main"),
+                subdirectory=text(4), capacity=int(text(5)), page_size=int(text(6)),
+                auto_refresh=self.table.item(row, 7).checkState() == Qt.Checked,
+                refresh_minutes=int(text(8)),
             ))
         return values
+
+    def selected_config_id(self) -> str:
+        row = self.table.currentRow()
+        item = self.table.item(row, 0) if row >= 0 else None
+        return str(item.data(Qt.UserRole) or "") if item else ""
 
     def _validate_accept(self) -> None:
         try:
@@ -298,6 +331,8 @@ class EepromSourceSettingsDialog(QDialog):
                     raise ValueError("자동 동기화 주기는 1분에서 10분 사이여야 합니다.")
                 if config.capacity <= 0 or config.page_size <= 0 or config.capacity % config.page_size:
                     raise ValueError(f"{config.display_name}: 용량은 페이지 크기의 배수여야 합니다.")
+                if config.is_local and not Path(config.repository_url).is_dir():
+                    raise ValueError(f"{config.display_name}: 로컬 폴더를 찾을 수 없습니다.\n{config.repository_url}")
                 parse_github_location(config.repository_url, config.branch)
         except (ValueError, TypeError) as error:
             QMessageBox.warning(self, "EEPROM 설정 확인", str(error))
@@ -339,6 +374,7 @@ class EepromMapDialog(QDialog):
             QLabel#cardCaption { color:#9EACB7; font-size:11px; }
             QLabel#cardValue { color:#F5F8FA; font-size:17px; font-weight:600; }
             QComboBox, QLineEdit { background:#10161B; color:#E8EEF2; border:1px solid #43515C; padding:6px; }
+            QComboBox QAbstractItemView { background:#10161B; color:#E8EEF2; selection-background-color:#245E82; selection-color:#FFFFFF; border:1px solid #43515C; }
             QPushButton { background:#2A3540; color:#F1F5F7; border:1px solid #46545F; padding:7px 12px; }
             QPushButton:hover { background:#3A4853; }
             QPushButton#primary { background:#147CB8; border-color:#147CB8; }
@@ -450,12 +486,13 @@ class EepromMapDialog(QDialog):
         self.warning_view.setFont(QFont("Cascadia Mono", 9))
         self.tabs.addTab(self.warning_view, "검토 및 분석 근거")
 
-    def _reload_combo(self) -> None:
-        current = self.source_combo.currentData()
+    def _reload_combo(self, preferred_id: str = "") -> None:
+        current = preferred_id or self.source_combo.currentData()
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
         for config in self.configs:
-            self.source_combo.addItem(config.display_name, config.id)
+            source_label = "로컬" if config.is_local else "GitHub"
+            self.source_combo.addItem(f"{config.display_name}  ·  {source_label}", config.id)
         index = self.source_combo.findData(current)
         self.source_combo.setCurrentIndex(index if index >= 0 else (0 if self.configs else -1))
         self.source_combo.blockSignals(False)
@@ -488,7 +525,7 @@ class EepromMapDialog(QDialog):
             save_source_configs(self.settings, self.configs, dialog.deploy_default.isChecked())
         except OSError as error:
             QMessageBox.warning(self, "배포 기본값 저장", f"사용자 설정은 저장했지만 배포 기본값 파일을 기록하지 못했습니다.\n\n{error}")
-        self._reload_combo()
+        self._reload_combo(dialog.selected_config_id())
         self._reset_timer()
         self.configsChanged.emit()
         if self.configs:

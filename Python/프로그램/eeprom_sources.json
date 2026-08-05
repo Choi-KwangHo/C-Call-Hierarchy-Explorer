@@ -1,9 +1,10 @@
 {
-  "schema": 1,
+  "schema": 2,
   "items": [
     {
       "id": "susan-heavy-duty-lift-48v",
       "display_name": "Susan Heavy-duty Lift 48V",
+      "source_type": "github",
       "repository_url": "https://github.com/Esol-Lab/Susan-Heavy-duty-lift-48V.git",
       "branch": "main",
       "subdirectory": "48V_HDL/App",

@@ -71,4 +71,4 @@ cscript //nologo tests\test_analyzer.js
 
 PySide6·Tree-sitter·libclang을 사용하는 새 버전은 [Python/프로그램/README.md](Python/프로그램/README.md)를 참고하십시오. `Python/프로그램/install.bat`로 설치하고 `run.bat`로 실행할 수 있습니다.
 
-Python 버전에는 GitHub 브랜치를 1~10분 간격으로 변경 확인하고 AT24C128의 페이지 주소, 물리 사용량, 저장 payload와 관련 C 구조체 선언을 연결해 표시하는 **EEPROM 메모리 맵 View**가 포함됩니다.
+Python 버전에는 GitHub 브랜치 또는 로컬 펌웨어 폴더의 변경을 확인하고 AT24C128의 페이지 주소, 물리 사용량, 저장 payload와 관련 C 구조체 선언을 연결해 표시하는 **EEPROM 메모리 맵 View**가 포함됩니다. 로컬 폴더 등록 정보는 사용자 PC에만 저장되며 배포 기본 목록에서는 자동 제외됩니다.

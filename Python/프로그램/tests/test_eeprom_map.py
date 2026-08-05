@@ -2,10 +2,26 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from eeprom_map import (
     EepromSourceConfig, analyze_eeprom_source, parse_github_location,
+    save_source_configs, source_revision,
 )
+
+
+class MemorySettings:
+    def __init__(self) -> None:
+        self.values = {}
+
+    def value(self, key, default=""):
+        return self.values.get(key, default)
+
+    def setValue(self, key, value) -> None:  # noqa: N802 - Qt-compatible test stub
+        self.values[key] = value
+
+    def sync(self) -> None:
+        pass
 
 
 class EepromMapTests(unittest.TestCase):
@@ -90,6 +106,39 @@ class EepromMapTests(unittest.TestCase):
             )
             self.assertTrue(any("겹칩니다" in warning for warning in result.warnings))
             self.assertTrue(all(item.status == "중복 영역" for item in result.regions if item.allocated))
+
+    def test_local_source_change_updates_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "map.c"
+            source.write_text("void first(void) {}\n", encoding="utf-8")
+            config = EepromSourceConfig.create(
+                "local", source_type="local", repository_url=str(root)
+            )
+            before = source_revision(config, "")
+            source.write_text("void second(void) { int changed = 1; }\n", encoding="utf-8")
+            after = source_revision(config, "")
+            self.assertNotEqual(before, after)
+
+    def test_local_sources_are_saved_for_user_but_excluded_from_deploy_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = root / "eeprom_sources.json"
+            settings = MemorySettings()
+            github = EepromSourceConfig.create(
+                "remote", source_type="github",
+                repository_url="https://github.com/example/firmware.git",
+            )
+            local = EepromSourceConfig.create(
+                "local", source_type="local", repository_url=str(root)
+            )
+            with patch("eeprom_map.source_catalog_path", return_value=catalog):
+                save_source_configs(settings, [github, local], deploy_default=True)
+
+            user_items = json.loads(settings.values["eeprom/sourceItems"])["items"]
+            deploy_items = json.loads(catalog.read_text(encoding="utf-8"))["items"]
+            self.assertEqual([item["display_name"] for item in user_items], ["remote", "local"])
+            self.assertEqual([item["display_name"] for item in deploy_items], ["remote"])
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ SKIP_DIRECTORIES = {
 class EepromSourceConfig:
     id: str
     display_name: str
+    source_type: str = "github"
     repository_url: str = ""
     branch: str = "main"
     subdirectory: str = ""
@@ -43,10 +44,15 @@ class EepromSourceConfig:
 
     @classmethod
     def from_dict(cls, value: dict) -> "EepromSourceConfig":
+        repository_url = str(value.get("repository_url") or "")
+        source_type = str(value.get("source_type") or "").strip().lower()
+        if source_type not in {"github", "local"}:
+            source_type = "github" if repository_url.lower().startswith("https://github.com/") else "local"
         return cls(
             id=str(value.get("id") or uuid.uuid4().hex),
             display_name=str(value.get("display_name") or value.get("name") or "EEPROM 항목"),
-            repository_url=str(value.get("repository_url") or ""),
+            source_type=source_type,
+            repository_url=repository_url,
             branch=str(value.get("branch") or "main"),
             subdirectory=str(value.get("subdirectory") or ""),
             capacity=max(1, int(value.get("capacity") or AT24C128_CAPACITY)),
@@ -54,6 +60,10 @@ class EepromSourceConfig:
             auto_refresh=bool(value.get("auto_refresh", True)),
             refresh_minutes=min(10, max(1, int(value.get("refresh_minutes") or 5))),
         )
+
+    @property
+    def is_local(self) -> bool:
+        return self.source_type == "local" or not self.repository_url or not self.repository_url.lower().startswith("https://github.com/")
 
 
 @dataclass(slots=True)
@@ -146,20 +156,32 @@ def load_source_configs(settings, current_root: str = "") -> list[EepromSourceCo
         return defaults
     if current_root:
         root = Path(current_root)
-        return [EepromSourceConfig.create(root.name or "현재 프로젝트")]
+        return [EepromSourceConfig.create(
+            root.name or "현재 프로젝트",
+            source_type="local",
+            repository_url=str(root.resolve()),
+        )]
     return []
 
 
 def save_source_configs(settings, configs: Iterable[EepromSourceConfig], deploy_default: bool = False) -> None:
-    payload = {"schema": 1, "items": [asdict(item) for item in configs]}
+    items = list(configs)
+    payload = {"schema": 2, "items": [asdict(item) for item in items]}
     encoded = json.dumps(payload, ensure_ascii=False, indent=2)
     settings.setValue("eeprom/sourceItems", encoded)
+    settings.sync()
     if deploy_default:
         destination = source_catalog_path()
         if destination is None:
             raise OSError("설치된 프로그램에서는 배포 기본값 파일을 수정할 수 없습니다.")
+        # Local paths are machine-specific and must never be shipped to other users.
+        deploy_payload = {
+            "schema": 2,
+            "items": [asdict(item) for item in items if not item.is_local],
+        }
+        deploy_encoded = json.dumps(deploy_payload, ensure_ascii=False, indent=2)
         temporary = destination.with_suffix(destination.suffix + ".tmp")
-        temporary.write_text(encoded + "\n", encoding="utf-8")
+        temporary.write_text(deploy_encoded + "\n", encoding="utf-8")
         temporary.replace(destination)
 
 
@@ -210,6 +232,20 @@ def _run_git(arguments: list[str], cwd: Path | None = None, timeout: int = 120) 
     return process.stdout.strip()
 
 
+def _local_source_revision(root: Path) -> str:
+    """Create a cheap revision from C source metadata without reading every file."""
+    digest = hashlib.sha256()
+    for path in sorted(_source_files(root), key=lambda item: str(item).casefold()):
+        try:
+            stat = path.stat()
+            relative = path.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        digest.update(str(relative).replace("\\", "/").encode("utf-8", errors="replace"))
+        digest.update(f"\0{stat.st_mtime_ns}\0{stat.st_size}\n".encode("ascii"))
+    return f"local-{digest.hexdigest()}"
+
+
 def synchronize_source(
     config: EepromSourceConfig,
     current_root: str,
@@ -218,18 +254,15 @@ def synchronize_source(
 ) -> tuple[Path, str]:
     notify = progress or (lambda *_: None)
     clone_url, branch, url_subpath = parse_github_location(config.repository_url, config.branch)
+    local_source = not clone_url or Path(clone_url).is_dir()
     if not clone_url:
         root = Path(current_root).resolve()
         if not root.is_dir():
             raise RuntimeError("현재 분석 프로젝트가 열려 있지 않습니다.")
         commit = ""
-        try:
-            commit = _run_git(["-C", str(root), "rev-parse", "HEAD"], timeout=15)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
-            pass
     elif Path(clone_url).is_dir():
         root = Path(clone_url).resolve()
-        commit = "local"
+        commit = ""
     else:
         cache = Path(cache_root).resolve()
         cache.mkdir(parents=True, exist_ok=True)
@@ -260,6 +293,8 @@ def synchronize_source(
         if not candidate.is_dir():
             raise RuntimeError(f"분석 하위 폴더를 찾을 수 없습니다: {subdirectory}")
         root = candidate
+    if local_source:
+        commit = _local_source_revision(root)
     notify(1, 3, f"{config.display_name}: C 소스 검색 중…")
     return root, commit
 
@@ -269,19 +304,13 @@ def source_revision(config: EepromSourceConfig, current_root: str) -> str:
     clone_url, branch, _ = parse_github_location(config.repository_url, config.branch)
     if not clone_url:
         root = Path(current_root).resolve()
-        try:
-            return _run_git(["-C", str(root), "rev-parse", "HEAD"], timeout=15)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
-            newest = max(
-                (path.stat().st_mtime_ns for path in _source_files(root)),
-                default=0,
-            )
-            return f"local-{newest}"
+        return _local_source_revision(root)
     if Path(clone_url).is_dir():
-        try:
-            return _run_git(["-C", clone_url, "rev-parse", "HEAD"], timeout=15)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
-            return "local"
+        root = Path(clone_url).resolve()
+        subdirectory = config.subdirectory.strip().replace("\\", "/")
+        if subdirectory:
+            root = (root / subdirectory).resolve()
+        return _local_source_revision(root)
     output = _run_git(["ls-remote", clone_url, f"refs/heads/{branch}"], timeout=30)
     revision = output.split(None, 1)[0] if output else ""
     if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
