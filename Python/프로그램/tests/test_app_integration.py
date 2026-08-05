@@ -240,7 +240,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.3.4")
+        self.assertEqual(APP_VERSION, "1.3.5")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
@@ -313,6 +313,9 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertEqual(dialog.categories.count(), 4)
             self.assertEqual(dialog.categories.item(1).text().strip(), "프로젝트 분석 범위")
             self.assertEqual(dialog.categories.item(2).text(), "적용 시스템 범위")
+            self.assertFalse(bool(dialog.categories.item(0).flags() & Qt.ItemIsSelectable))
+            self.assertFalse(bool(dialog.categories.item(2).flags() & Qt.ItemIsSelectable))
+            self.assertGreaterEqual(dialog.categories.item(1).sizeHint().height(), 34)
             dialog.search.setText("EEPROM")
             self.assertEqual(dialog.categories.currentRow(), 3)
             self.assertFalse(dialog.eeprom_panel.isHidden())

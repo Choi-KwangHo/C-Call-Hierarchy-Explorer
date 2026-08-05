@@ -681,6 +681,27 @@ def _resolve_size(
     return value, ""
 
 
+def _resolve_buffer_structure(
+    argument: str, structures: dict[str, StructInfo], variable_types: dict[str, str],
+) -> str:
+    """Resolve common EEPROM buffer casts without guessing unrelated symbols."""
+    cast = re.search(
+        r"\(\s*(?:const\s+|volatile\s+)*(?:struct\s+)?([A-Za-z_]\w*)\s*\*+\s*\)",
+        argument,
+    )
+    if cast and cast.group(1) in structures:
+        return cast.group(1)
+    without_casts = re.sub(
+        r"\(\s*(?:const\s+|volatile\s+)*(?:struct\s+)?[A-Za-z_]\w*\s*\*+\s*\)",
+        "",
+        argument,
+    )
+    variable = re.fullmatch(
+        r"\s*&?\s*([A-Za-z_]\w*)\s*(?:\[[^\]]+\])?\s*", without_casts,
+    )
+    return variable_types.get(variable.group(1), "") if variable else ""
+
+
 def _infer_regions(
     sources: list[tuple[Path, str]], config: EepromSourceConfig,
     expressions: dict[str, str], macro_values: dict[str, int],
@@ -803,9 +824,12 @@ def _infer_regions(
                 if candidate_struct and size is None:
                     size, struct_name = candidate, candidate_struct
                     break
-                variable_match = re.fullmatch(r"\s*&?\s*([A-Za-z_]\w*)\s*", argument)
-                if size is None and variable_match and variable_types.get(variable_match.group(1)):
-                    struct_name = variable_types[variable_match.group(1)]
+                buffer_structure = _resolve_buffer_structure(argument, structure_map, variable_types)
+                if buffer_structure and not struct_name:
+                    struct_name = buffer_structure
+                    # A wrapper often receives the physical page size as a
+                    # separate argument even though its buffer is a smaller
+                    # typed payload. Prefer the proven C type for payload size.
                     size = structure_map[struct_name].size
             # Do not guess from an arbitrary numeric argument.  In HAL/BSP
             # calls it is commonly a timeout or retry count (for example 300).

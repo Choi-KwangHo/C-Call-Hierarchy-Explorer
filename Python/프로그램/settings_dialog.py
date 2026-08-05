@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -275,7 +275,7 @@ class ProjectSettingsDialog(QDialog):
             QLineEdit:focus { border:1px solid #007ACC; }
             QLineEdit:disabled { background:#202020; color:#858585; }
             QListWidget { background:#181818; border:0; color:#CCCCCC; outline:0; }
-            QListWidget::item { padding:8px 10px; }
+            QListWidget::item { min-height:28px; padding:4px 10px; }
             QListWidget::item:hover { background:rgba(70,70,75,115); color:#FFFFFF; }
             QListWidget::item:selected { background:rgba(22,131,216,105); color:#FFFFFF; }
             QTreeWidget { background:#181818; color:#CCCCCC; border:1px solid #303030; alternate-background-color:#1D1D1D; outline:0; }
@@ -313,11 +313,21 @@ class ProjectSettingsDialog(QDialog):
         body = QHBoxLayout()
         body.setSpacing(20)
         self.categories = QListWidget()
-        self.categories.setFixedWidth(190)
+        self.categories.setFixedWidth(220)
+        self.categories.setSpacing(2)
         self.categories.addItems([
             "설정", "  프로젝트 분석 범위",
             "적용 시스템 범위", "  EEPROM 소스 및 동기화",
         ])
+        for row in range(self.categories.count()):
+            item = self.categories.item(row)
+            item.setSizeHint(QSize(0, 34 if row in (1, 3) else 30))
+            if row in (0, 2):
+                item.setFlags(Qt.NoItemFlags)
+                heading_font = item.font()
+                heading_font.setBold(True)
+                item.setFont(heading_font)
+                item.setForeground(QColor("#9FB3C1"))
         self.categories.setCurrentRow(3 if initial_page == "system" else 1)
         self.categories.currentRowChanged.connect(self._category_changed)
         body.addWidget(self.categories)

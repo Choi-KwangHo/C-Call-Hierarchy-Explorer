@@ -10,7 +10,7 @@ from PySide6.QtCore import QStandardPaths
 from eeprom_map import EepromMapResult, EepromSourceConfig
 
 
-CACHE_FORMAT = 1
+CACHE_FORMAT = 2
 
 
 def _signature(config: EepromSourceConfig) -> tuple:

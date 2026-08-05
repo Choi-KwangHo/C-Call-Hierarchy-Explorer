@@ -8,7 +8,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings  # noqa: E402
+from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from eeprom_cache import EepromResultCacheStore  # noqa: E402
@@ -41,9 +41,12 @@ class EepromUiTests(unittest.TestCase):
                 """
                 typedef unsigned char u8;
                 #define EEPROM_PAGE0 0
+                #define EEPROM_PAGE1 1
                 typedef struct Settings { u8 mode; } Settings;
                 Settings value;
+                u8 raw[64];
                 void save(void){ EEPROM_Write(EEPROM_PAGE0, (u8*)&value, sizeof(value), 0); }
+                void load_raw(void){ EEPROM_Read(EEPROM_PAGE1, raw, 64, 0); }
                 """,
                 encoding="utf-8",
             )
@@ -69,6 +72,14 @@ class EepromUiTests(unittest.TestCase):
             self.assertGreaterEqual(dialog.map_scroll.horizontalScrollBar().maximum(), 0)
             self.assertGreater(dialog.structure_table.rowCount(), 0)
             self.assertTrue(dialog.code_preview.verticalScrollBar() is not None)
+            for row in range(dialog.region_table.rowCount()):
+                region = dialog.region_table.item(row, 0).data(Qt.UserRole)
+                if region.actual_usage and not region.struct_name:
+                    dialog.region_table.selectRow(row)
+                    self.app.processEvents()
+                    break
+            self.assertIn("정의된 구조체 없음", dialog.structure_caption.text())
+            self.assertIn("정의된 구조체 없음", dialog.code_preview.toPlainText())
             dialog._toggle_fullscreen()
             self.assertTrue(dialog.isFullScreen())
             dialog._toggle_fullscreen()

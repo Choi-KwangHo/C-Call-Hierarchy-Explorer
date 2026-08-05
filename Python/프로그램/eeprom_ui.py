@@ -864,6 +864,8 @@ class EepromMapDialog(QDialog):
                 self.region_table.selectRow(row)
                 self.region_table.scrollToItem(self.region_table.item(row, 0))
                 return
+        self.region_table.clearSelection()
+        self._show_no_structure(f"페이지 {page}: 정의된 구조체 없음")
 
     def _region_selected(self) -> None:
         items = self.region_table.selectedItems()
@@ -871,12 +873,26 @@ class EepromMapDialog(QDialog):
             return
         region = items[0].data(Qt.UserRole)
         if not region or not region.struct_name:
+            name = region.name if region else "선택 영역"
+            self._show_no_structure(f"{name}: 정의된 구조체 없음")
             return
         for row in range(self.structure_table.rowCount()):
             structure = self.structure_table.item(row, 0).data(Qt.UserRole)
             if structure and structure.name == region.struct_name:
                 self.structure_table.selectRow(row)
-                break
+                return
+        self._show_no_structure(f"{region.struct_name}: 구조체 선언을 찾을 수 없음")
+
+    def _show_no_structure(self, message: str = "정의된 구조체 없음") -> None:
+        self.structure_table.blockSignals(True)
+        self.structure_table.clearSelection()
+        self.structure_table.blockSignals(False)
+        self.structure_caption.setText(message)
+        self.code_preview.setPlainText(
+            "정의된 구조체 없음\n\n"
+            "이 EEPROM 영역에서는 주소 또는 읽기/쓰기 접근은 확인되었지만, "
+            "버퍼와 연결되는 C struct/union 선언을 확정하지 못했습니다."
+        )
 
     def _structure_selected(self) -> None:
         items = self.structure_table.selectedItems()

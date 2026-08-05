@@ -87,6 +87,28 @@ class EepromMapTests(unittest.TestCase):
             self.assertEqual([item.name for item in result.structures], ["eeSettings"])
             self.assertIn("typedef struct eeSettings", result.structures[0].declaration)
 
+    def test_typed_pointer_cast_links_buffer_without_sizeof(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "memory.c").write_text(
+                """
+                typedef unsigned char u8;
+                #define EEPROM_ADDR_CONFIG 0x40
+                typedef struct DeviceConfig { u8 mode; u8 flags; } DeviceConfig;
+                u8 raw[64];
+                void load(void) {
+                    EEPROM_Read(EEPROM_ADDR_CONFIG, (DeviceConfig *)&raw[0], 64, 0);
+                }
+                """,
+                encoding="utf-8",
+            )
+            result = analyze_eeprom_source(
+                EepromSourceConfig.create("cast", repository_url=str(root)), "", root / "cache"
+            )
+            used = next(item for item in result.regions if item.actual_usage)
+            self.assertEqual(used.struct_name, "DeviceConfig")
+            self.assertEqual(used.payload_size, 2)
+
     def test_overlap_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
