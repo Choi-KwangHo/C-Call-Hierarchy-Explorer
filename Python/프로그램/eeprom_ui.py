@@ -17,6 +17,7 @@ from eeprom_map import (
     EepromSourceConfig, StructInfo, analyze_eeprom_source, load_source_configs,
     parse_github_location, save_source_configs, source_catalog_path, source_revision,
 )
+from eeprom_cache import EepromResultCacheStore
 from window_state import apply_dark_title_bar, restore_window_state, save_window_state
 
 
@@ -226,13 +227,20 @@ class CDeclarationHighlighter(QSyntaxHighlighter):
 class EepromSourceSettingsDialog(QDialog):
     HEADERS = ["아이템 표시명", "소스 유형", "GitHub 주소 / 로컬 폴더", "브랜치", "용량", "페이지", "자동", "주기(분)"]
 
-    def __init__(self, configs: list[EepromSourceConfig], current_root: str, parent=None) -> None:
+    def __init__(
+        self, configs: list[EepromSourceConfig], current_root: str, parent=None,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.current_root = current_root
+        self.embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.Widget)
         self.setWindowTitle("EEPROM 소스 및 자동 동기화 설정")
-        apply_dark_title_bar(self)
-        self.resize(1280, 560)
-        self.setMinimumSize(900, 430)
+        if not embedded:
+            apply_dark_title_bar(self)
+            self.resize(1280, 560)
+            self.setMinimumSize(900, 430)
         self.setStyleSheet("""
             QDialog { background:#181C20; color:#E6EDF3; }
             QTableWidget { background:#11161B; alternate-background-color:#171D23; color:#DCE5EC; gridline-color:#33404A; }
@@ -286,13 +294,14 @@ class EepromSourceSettingsDialog(QDialog):
         self.deploy_default.setToolTip("개발 소스에서 실행할 때 eeprom_sources.json에 기록되어 다음 release.bat 배포에 포함됩니다.")
         controls.addWidget(self.deploy_default)
         layout.addLayout(controls)
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
-        buttons.button(QDialogButtonBox.Ok).setText("적용")
-        buttons.button(QDialogButtonBox.Ok).setObjectName("primary")
-        buttons.button(QDialogButtonBox.Cancel).setText("취소")
-        buttons.accepted.connect(self._validate_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        if not embedded:
+            buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
+            buttons.button(QDialogButtonBox.Ok).setText("적용")
+            buttons.button(QDialogButtonBox.Ok).setObjectName("primary")
+            buttons.button(QDialogButtonBox.Cancel).setText("취소")
+            buttons.accepted.connect(self._validate_accept)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
 
     def _append(self, config: EepromSourceConfig, select: bool = True) -> None:
         row = self.table.rowCount()
@@ -357,23 +366,27 @@ class EepromSourceSettingsDialog(QDialog):
         item = self.table.item(row, 0) if row >= 0 else None
         return str(item.data(Qt.UserRole) or "") if item else ""
 
+    def validated_configs(self) -> list[EepromSourceConfig]:
+        configs = self.configs()
+        names: set[str] = set()
+        for config in configs:
+            if not config.display_name:
+                raise ValueError("아이템 표시명을 입력하십시오.")
+            if config.display_name.casefold() in names:
+                raise ValueError(f"중복된 아이템 표시명입니다: {config.display_name}")
+            names.add(config.display_name.casefold())
+            if not 1 <= config.refresh_minutes <= 10:
+                raise ValueError("자동 동기화 주기는 1분에서 10분 사이여야 합니다.")
+            if config.capacity <= 0 or config.page_size <= 0 or config.capacity % config.page_size:
+                raise ValueError(f"{config.display_name}: 용량은 페이지 크기의 배수여야 합니다.")
+            if config.is_local and not Path(config.repository_url).is_dir():
+                raise ValueError(f"{config.display_name}: 로컬 폴더를 찾을 수 없습니다.\n{config.repository_url}")
+            parse_github_location(config.repository_url, config.branch)
+        return configs
+
     def _validate_accept(self) -> None:
         try:
-            configs = self.configs()
-            names: set[str] = set()
-            for config in configs:
-                if not config.display_name:
-                    raise ValueError("아이템 표시명을 입력하십시오.")
-                if config.display_name.casefold() in names:
-                    raise ValueError(f"중복된 아이템 표시명입니다: {config.display_name}")
-                names.add(config.display_name.casefold())
-                if not 1 <= config.refresh_minutes <= 10:
-                    raise ValueError("자동 동기화 주기는 1분에서 10분 사이여야 합니다.")
-                if config.capacity <= 0 or config.page_size <= 0 or config.capacity % config.page_size:
-                    raise ValueError(f"{config.display_name}: 용량은 페이지 크기의 배수여야 합니다.")
-                if config.is_local and not Path(config.repository_url).is_dir():
-                    raise ValueError(f"{config.display_name}: 로컬 폴더를 찾을 수 없습니다.\n{config.repository_url}")
-                parse_github_location(config.repository_url, config.branch)
+            self.validated_configs()
         except (ValueError, TypeError) as error:
             QMessageBox.warning(self, "EEPROM 설정 확인", str(error))
             return
@@ -382,6 +395,7 @@ class EepromSourceSettingsDialog(QDialog):
 
 class EepromMapDialog(QDialog):
     configsChanged = Signal()
+    settingsRequested = Signal()
 
     def __init__(self, settings: QSettings, current_root: str, parent=None) -> None:
         super().__init__(parent)
@@ -389,6 +403,7 @@ class EepromMapDialog(QDialog):
         self.current_root = current_root
         self.configs = load_source_configs(settings, current_root)
         self.results: dict[str, EepromMapResult] = {}
+        self.result_cache = EepromResultCacheStore()
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self.worker: _Worker | None = None
@@ -408,9 +423,17 @@ class EepromMapDialog(QDialog):
         QTimer.singleShot(0, self._apply_saved_window_mode)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._automatic_refresh)
-        self._reload_combo()
+        for config in self.configs:
+            cached = self.result_cache.load(config)
+            if cached is not None:
+                self.results[config.id] = cached
+        preferred = str(self.settings.value("eepromMapWindow/currentSourceId", "") or "")
+        self._reload_combo(preferred)
         self._reset_timer()
-        QTimer.singleShot(0, lambda: self.refresh(True))
+        current = self._current_config()
+        if current and current.id in self.results:
+            self._display(self.results[current.id])
+        QTimer.singleShot(0, lambda: self.refresh(False))
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
@@ -462,7 +485,7 @@ class EepromMapDialog(QDialog):
         refresh.setObjectName("primary")
         refresh.clicked.connect(lambda: self.refresh(True))
         top.addWidget(refresh)
-        configure = QPushButton("소스 설정…")
+        configure = QPushButton("설정…")
         configure.clicked.connect(self.open_settings)
         top.addWidget(configure)
         self.fullscreen_button = QPushButton("전체 화면")
@@ -641,6 +664,8 @@ class EepromMapDialog(QDialog):
 
     def _source_changed(self) -> None:
         config = self._current_config()
+        if config:
+            self.settings.setValue("eepromMapWindow/currentSourceId", config.id)
         self._reset_timer()
         if config and config.id in self.results:
             self._display(self.results[config.id])
@@ -655,19 +680,21 @@ class EepromMapDialog(QDialog):
             self.timer.stop()
 
     def open_settings(self) -> None:
-        dialog = EepromSourceSettingsDialog(self.configs, self.current_root, self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        try:
-            self.configs = dialog.configs()
-            save_source_configs(self.settings, self.configs, dialog.deploy_default.isChecked())
-        except OSError as error:
-            QMessageBox.warning(self, "배포 기본값 저장", f"사용자 설정은 저장했지만 배포 기본값 파일을 기록하지 못했습니다.\n\n{error}")
-        self._reload_combo(dialog.selected_config_id())
+        self.settingsRequested.emit()
+
+    def reload_configs(self, preferred_id: str = "") -> None:
+        self.configs = load_source_configs(self.settings, self.current_root)
+        for config in self.configs:
+            cached = self.result_cache.load(config)
+            if cached is not None:
+                self.results[config.id] = cached
+        self._reload_combo(preferred_id)
         self._reset_timer()
-        self.configsChanged.emit()
-        if self.configs:
-            self.refresh(True)
+        current = self._current_config()
+        if current and current.id in self.results:
+            self._display(self.results[current.id])
+        if current:
+            self.refresh(False)
 
     def refresh(self, force: bool = False) -> None:
         config = self._current_config()
@@ -721,6 +748,10 @@ class EepromMapDialog(QDialog):
             )
             return
         self.results[result.config.id] = result
+        try:
+            self.result_cache.save(result)
+        except Exception:  # noqa: BLE001 - cache failure must never block a completed analysis
+            pass
         if self._current_config() and self._current_config().id == result.config.id:
             self._display(result)
 

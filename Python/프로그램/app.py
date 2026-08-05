@@ -25,7 +25,8 @@ from project_cache import ProjectCacheStore
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions
 from trace_ui import TraceCenterDialog
 from eeprom_map import load_source_configs, save_source_configs
-from eeprom_ui import CDeclarationHighlighter, EepromMapDialog, EepromSourceSettingsDialog
+from eeprom_ui import CDeclarationHighlighter, EepromMapDialog
+from theme import apply_application_dark_theme
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
 from update_service import (
@@ -36,7 +37,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -439,13 +440,10 @@ class MainWindow(QMainWindow):
         file_menu.addAction(exit_action)
 
         settings_menu = self.menuBar().addMenu("설정")
-        project_settings_action = QAction("프로젝트 설정 열기…", self)
+        project_settings_action = QAction("설정 열기…", self)
         project_settings_action.setShortcut("Ctrl+,")
         project_settings_action.triggered.connect(self._open_project_settings)
         settings_menu.addAction(project_settings_action)
-        eeprom_settings_action = QAction("EEPROM 소스 및 동기화 설정…", self)
-        eeprom_settings_action.triggered.connect(self._open_eeprom_settings)
-        settings_menu.addAction(eeprom_settings_action)
 
         trace_menu = self.menuBar().addMenu("Trace")
         trace_center_action = QAction("실행 구조 및 Trace 센터…", self)
@@ -459,8 +457,8 @@ class MainWindow(QMainWindow):
         eeprom_map_action.triggered.connect(self._open_eeprom_map)
         eeprom_menu.addAction(eeprom_map_action)
         eeprom_menu.addSeparator()
-        eeprom_source_action = QAction("GitHub 소스 및 자동 동기화 설정…", self)
-        eeprom_source_action.triggered.connect(self._open_eeprom_settings)
+        eeprom_source_action = QAction("설정에서 적용 시스템 범위 열기…", self)
+        eeprom_source_action.triggered.connect(lambda: self._open_project_settings(initial_page="system"))
         eeprom_menu.addAction(eeprom_source_action)
 
         self.toolbar = QToolBar("주 도구", self)
@@ -687,33 +685,53 @@ class MainWindow(QMainWindow):
             excluded,
         )
 
-    def _open_project_settings(self) -> None:
-        if not self.result or not self.session.root:
-            QMessageBox.information(self, "프로젝트 설정", "먼저 분석할 메인 폴더를 열어 주십시오.")
+    def _open_project_settings(self, checked: bool = False, initial_page: str = "analysis") -> None:
+        if (not self.result or not self.session.root) and initial_page != "system":
+            QMessageBox.information(self, "설정", "프로젝트 분석 범위를 설정하려면 먼저 분석할 메인 폴더를 열어 주십시오.")
             return
+        root = self.session.root or str(Path.cwd())
         current = list(self.session.excluded_directories)
         current_external = self.show_external_functions
         current_macro = self.exclude_macro_functions
+        current_eeprom = load_source_configs(self.settings, self.session.root or "")
         dialog = ProjectSettingsDialog(
-            self.session.root,
+            root,
             current,
             self,
             show_external_functions=current_external,
             exclude_macro_functions=current_macro,
+            eeprom_configs=current_eeprom,
+            initial_page=initial_page,
         )
         if dialog.exec() != QDialog.Accepted:
             return
         updated = dialog.excluded_folders()
         updated_external = dialog.show_external_functions()
         updated_macro = dialog.exclude_macro_functions()
+        updated_eeprom = dialog.eeprom_configs()
         folders_changed = [value.casefold() for value in updated] != [value.casefold() for value in current]
         external_changed = updated_external != current_external
         macro_changed = updated_macro != current_macro
+        eeprom_changed = updated_eeprom != current_eeprom
+        if eeprom_changed or dialog.deploy_eeprom_defaults():
+            try:
+                save_source_configs(
+                    self.settings, updated_eeprom, dialog.deploy_eeprom_defaults(),
+                )
+            except OSError as error:
+                QMessageBox.warning(
+                    self, "배포 기본값 저장",
+                    f"사용자 설정은 저장했지만 배포 기본값 파일을 기록하지 못했습니다.\n\n{error}",
+                )
+            if self.eeprom_view is not None:
+                self.eeprom_view.reload_configs(dialog.selected_eeprom_config_id())
         if not folders_changed and not external_changed and not macro_changed:
+            if eeprom_changed:
+                self.status_label.setText("적용 시스템 범위와 EEPROM 동기화 설정을 저장했습니다.")
             return
-        self._store_excluded_folders(self.session.root, updated)
-        self._store_show_external_functions(self.session.root, updated_external)
-        self._store_exclude_macro_functions(self.session.root, updated_macro)
+        self._store_excluded_folders(root, updated)
+        self._store_show_external_functions(root, updated_external)
+        self._store_exclude_macro_functions(root, updated_macro)
         self.session.set_excluded_directories(updated)
         self.session.set_exclude_macro_functions(updated_macro)
         self.show_external_functions = updated_external
@@ -950,34 +968,16 @@ class MainWindow(QMainWindow):
             self.trace_center = None
 
     def _open_eeprom_settings(self) -> None:
-        current_root = self.session.root or ""
-        configs = load_source_configs(self.settings, current_root)
-        dialog = EepromSourceSettingsDialog(configs, current_root, self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        try:
-            save_source_configs(
-                self.settings,
-                dialog.configs(),
-                dialog.deploy_default.isChecked(),
-            )
-        except OSError as error:
-            QMessageBox.warning(
-                self,
-                "배포 기본값 저장",
-                f"사용자 설정은 저장했지만 배포 기본값 파일을 기록하지 못했습니다.\n\n{error}",
-            )
-        if self.eeprom_view is not None:
-            self.eeprom_view.close()
-            self.eeprom_view.deleteLater()
-            self.eeprom_view = None
-        self.status_label.setText("EEPROM 소스 및 자동 동기화 설정을 저장했습니다.")
+        self._open_project_settings(initial_page="system")
 
     def _open_eeprom_map(self) -> None:
         current_root = self.session.root or ""
         if self.eeprom_view is None:
             self.eeprom_view = EepromMapDialog(self.settings, current_root, self)
             self.eeprom_view.finished.connect(self._eeprom_view_closed)
+            self.eeprom_view.settingsRequested.connect(
+                lambda: self._open_project_settings(initial_page="system")
+            )
         self.eeprom_view.show()
         self.eeprom_view.raise_()
         self.eeprom_view.activateWindow()
@@ -1691,7 +1691,7 @@ def main() -> int:
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName(APP_PUBLISHER)
     app.setWindowIcon(QIcon(resource_path("assets/CallHierarchyExplorer.ico")))
-    app.setStyle("Fusion")
+    apply_application_dark_theme(app)
     cleanup_previous_installations()
     if "--smoke-test" in sys.argv:
         with tempfile.TemporaryDirectory() as temporary:

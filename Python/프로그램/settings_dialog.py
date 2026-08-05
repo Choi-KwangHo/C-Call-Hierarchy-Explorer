@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from eeprom_map import EepromSourceConfig
+from eeprom_ui import EepromSourceSettingsDialog
 from window_state import apply_dark_title_bar
 
 
@@ -256,6 +258,8 @@ class ProjectSettingsDialog(QDialog):
         parent: QWidget | None = None,
         show_external_functions: bool = True,
         exclude_macro_functions: bool = True,
+        eeprom_configs: list[EepromSourceConfig] | None = None,
+        initial_page: str = "analysis",
     ) -> None:
         super().__init__(parent)
         self.root = Path(root).resolve()
@@ -266,7 +270,6 @@ class ProjectSettingsDialog(QDialog):
         self.setMinimumSize(760, 520)
         self.setStyleSheet("""
             QDialog { background:#181818; color:#CCCCCC; }
-            QDialog QWidget { color:#CCCCCC; }
             QLineEdit { background:#1F1F1F; border:1px solid #3C3C3C; color:#DDDDDD; padding:7px;
                         selection-background-color:rgba(22,131,216,145); selection-color:#FFFFFF; }
             QLineEdit:focus { border:1px solid #007ACC; }
@@ -299,7 +302,7 @@ class ProjectSettingsDialog(QDialog):
         outer.setContentsMargins(18, 16, 18, 16)
         outer.setSpacing(12)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("설정 검색 (예: 분석 범위, 외부 함수, 매크로)")
+        self.search.setPlaceholderText("설정 검색 (예: 분석 범위, EEPROM, 자동 동기화)")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter_settings)
         # Settings search is an instant filter. Enter must never activate an
@@ -311,14 +314,18 @@ class ProjectSettingsDialog(QDialog):
         body.setSpacing(20)
         self.categories = QListWidget()
         self.categories.setFixedWidth(190)
-        self.categories.addItems(["프로젝트", "  분석 범위"])
-        self.categories.setCurrentRow(1)
+        self.categories.addItems([
+            "설정", "  프로젝트 분석 범위",
+            "적용 시스템 범위", "  EEPROM 소스 및 동기화",
+        ])
+        self.categories.setCurrentRow(3 if initial_page == "system" else 1)
+        self.categories.currentRowChanged.connect(self._category_changed)
         body.addWidget(self.categories)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(10, 4, 10, 4)
-        self.page_title = QLabel("프로젝트 분석 설정")
+        self.page_title = QLabel("프로젝트 분석 범위")
         self.page_title.setObjectName("pageTitle")
         content_layout.addWidget(self.page_title)
         content_layout.addSpacing(12)
@@ -419,6 +426,12 @@ class ProjectSettingsDialog(QDialog):
         no_results_layout.addStretch(2)
         self.no_results.hide()
         content_layout.addWidget(self.no_results, 1)
+
+        self.eeprom_panel = EepromSourceSettingsDialog(
+            list(eeprom_configs or []), str(self.root), content, embedded=True,
+        )
+        self.eeprom_panel.hide()
+        content_layout.addWidget(self.eeprom_panel, 1)
         body.addWidget(content, 1)
         outer.addLayout(body, 1)
 
@@ -432,10 +445,11 @@ class ProjectSettingsDialog(QDialog):
         apply_button.setObjectName("primary")
         apply_button.setAutoDefault(False)
         apply_button.setDefault(False)
-        apply_button.clicked.connect(self.accept)
+        apply_button.clicked.connect(self._accept_settings)
         footer.addWidget(cancel_button)
         footer.addWidget(apply_button)
         outer.addLayout(footer)
+        self._category_changed(self.categories.currentRow())
 
     def excluded_folders(self) -> list[str]:
         return self.folder_tree.excluded_folders()
@@ -446,19 +460,58 @@ class ProjectSettingsDialog(QDialog):
     def exclude_macro_functions(self) -> bool:
         return self.macro_check.isChecked()
 
+    def eeprom_configs(self) -> list[EepromSourceConfig]:
+        return self.eeprom_panel.configs()
+
+    def deploy_eeprom_defaults(self) -> bool:
+        return self.eeprom_panel.deploy_default.isChecked()
+
+    def selected_eeprom_config_id(self) -> str:
+        return self.eeprom_panel.selected_config_id()
+
+    def _accept_settings(self) -> None:
+        try:
+            self.eeprom_panel.validated_configs()
+        except (ValueError, TypeError) as error:
+            self.categories.setCurrentRow(3)
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "EEPROM 설정 확인", str(error))
+            return
+        self.accept()
+
+    def _category_changed(self, row: int) -> None:
+        system_page = row >= 2
+        self.scope_card.setVisible(not system_page)
+        self.eeprom_panel.setVisible(system_page)
+        self.page_title.setText("적용 시스템 범위" if system_page else "프로젝트 분석 범위")
+        self.no_results.hide()
+
     def _filter_settings(self, text: str) -> None:
         query = text.strip().casefold()
-        keywords = (
+        analysis_keywords = (
             "프로젝트 분석 범위 포함 제외 하위 폴더 파일 c h 소스 함수 트리 "
             "외부 미확인 함수 표시 매크로 메크로 define 자동 감시 화면"
         )
+        system_keywords = (
+            "적용 시스템 범위 eeprom at24c128 소스 github 로컬 폴더 브랜치 "
+            "용량 페이지 자동 동기화 주기 배포 기본값"
+        )
         terms = [term for term in query.split() if term]
-        matched = not terms or all(term in keywords.casefold() for term in terms)
-        self.scope_card.setVisible(matched)
+        analysis_match = not terms or all(term in analysis_keywords.casefold() for term in terms)
+        system_match = not terms or all(term in system_keywords.casefold() for term in terms)
+        if terms and system_match and not analysis_match:
+            self.categories.setCurrentRow(3)
+        elif terms and analysis_match:
+            self.categories.setCurrentRow(1)
+        matched = analysis_match or system_match
         self.page_title.setVisible(matched)
         self.no_results.setVisible(not matched)
         if not matched:
+            self.scope_card.hide()
+            self.eeprom_panel.hide()
             self.no_results_detail.setText(
                 f"‘{text.strip()}’에 해당하는 설정을 찾지 못했습니다.\n"
                 "다른 검색어를 입력하거나 검색어를 지워 전체 설정을 표시하십시오."
             )
+        else:
+            self._category_changed(self.categories.currentRow())

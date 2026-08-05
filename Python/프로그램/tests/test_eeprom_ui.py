@@ -11,7 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from eeprom_map import EepromSourceConfig, save_source_configs  # noqa: E402
+from eeprom_cache import EepromResultCacheStore  # noqa: E402
+from eeprom_map import EepromMapResult, EepromRegion, EepromSourceConfig, save_source_configs  # noqa: E402
 from eeprom_ui import EepromMapDialog, EepromSourceSettingsDialog  # noqa: E402
 
 
@@ -72,6 +73,33 @@ class EepromUiTests(unittest.TestCase):
             self.assertTrue(dialog.isFullScreen())
             dialog._toggle_fullscreen()
             dialog.close()
+
+    def test_result_cache_restores_previous_analysis_and_rejects_changed_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = EepromSourceConfig.create(
+                "Cached firmware", source_type="local", repository_url=str(root),
+            )
+            result = EepromMapResult(
+                config=config, source_root=str(root), commit="local-revision",
+                regions=[EepromRegion(
+                    name="PAGE0", address=0, size=64, page=0, struct_name="",
+                    path="memory.c", lines=[1], access="쓰기", confidence="확정",
+                    evidence="test",
+                )], structures=[], used_bytes=64,
+            )
+            store = EepromResultCacheStore(root / "cache")
+            store.save(result)
+            restored = store.load(config)
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.commit, "local-revision")
+            self.assertEqual(restored.used_bytes, 64)
+            changed = EepromSourceConfig.from_dict({
+                "id": config.id, "display_name": config.display_name,
+                "source_type": "local", "repository_url": str(root),
+                "capacity": 8192, "page_size": 64,
+            })
+            self.assertIsNone(store.load(changed))
 
 
 if __name__ == "__main__":
