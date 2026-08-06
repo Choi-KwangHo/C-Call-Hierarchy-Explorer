@@ -312,25 +312,27 @@ class ProjectSettingsDialog(QDialog):
 
         body = QHBoxLayout()
         body.setSpacing(20)
+        navigation = QWidget()
+        navigation_layout = QVBoxLayout(navigation)
+        navigation_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_layout.setSpacing(6)
+        navigation_title = QLabel("설정")
+        navigation_title.setStyleSheet("color:#9FB3C1; font-weight:600; padding:4px 8px;")
+        navigation_layout.addWidget(navigation_title)
         self.categories = QListWidget()
         self.categories.setFixedWidth(220)
-        self.categories.setSpacing(2)
+        self.categories.setSpacing(4)
         self.categories.addItems([
-            "설정", "  프로젝트 분석 범위",
-            "적용 시스템 범위", "  EEPROM 소스 및 동기화",
+            "프로젝트 분석 범위",
+            "EEPROM 소스 및 동기화",
         ])
         for row in range(self.categories.count()):
             item = self.categories.item(row)
-            item.setSizeHint(QSize(0, 34 if row in (1, 3) else 30))
-            if row in (0, 2):
-                item.setFlags(Qt.NoItemFlags)
-                heading_font = item.font()
-                heading_font.setBold(True)
-                item.setFont(heading_font)
-                item.setForeground(QColor("#9FB3C1"))
-        self.categories.setCurrentRow(3 if initial_page == "system" else 1)
+            item.setSizeHint(QSize(0, 40))
+        self.categories.setCurrentRow(1 if initial_page == "system" else 0)
         self.categories.currentRowChanged.connect(self._category_changed)
-        body.addWidget(self.categories)
+        navigation_layout.addWidget(self.categories, 1)
+        body.addWidget(navigation)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -483,14 +485,14 @@ class ProjectSettingsDialog(QDialog):
         try:
             self.eeprom_panel.validated_configs()
         except (ValueError, TypeError) as error:
-            self.categories.setCurrentRow(3)
+            self.categories.setCurrentRow(1)
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "EEPROM 설정 확인", str(error))
             return
         self.accept()
 
     def _category_changed(self, row: int) -> None:
-        system_page = row >= 2
+        system_page = row == 1
         self.scope_card.setVisible(not system_page)
         self.eeprom_panel.setVisible(system_page)
         self.page_title.setText("적용 시스템 범위" if system_page else "프로젝트 분석 범위")
@@ -510,9 +512,9 @@ class ProjectSettingsDialog(QDialog):
         analysis_match = not terms or all(term in analysis_keywords.casefold() for term in terms)
         system_match = not terms or all(term in system_keywords.casefold() for term in terms)
         if terms and system_match and not analysis_match:
-            self.categories.setCurrentRow(3)
-        elif terms and analysis_match:
             self.categories.setCurrentRow(1)
+        elif terms and analysis_match:
+            self.categories.setCurrentRow(0)
         matched = analysis_match or system_match
         self.page_title.setVisible(matched)
         self.no_results.setVisible(not matched)

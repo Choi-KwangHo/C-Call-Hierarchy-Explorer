@@ -26,6 +26,7 @@ from settings_dialog import ProjectSettingsDialog, normalize_exclusions
 from trace_ui import TraceCenterDialog
 from eeprom_map import load_source_configs, save_source_configs
 from eeprom_ui import CDeclarationHighlighter, EepromMapDialog
+from iar_migration_ui import IarProjectMigrationDialog
 from theme import apply_application_dark_theme
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
@@ -37,7 +38,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.4.0"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -390,6 +391,7 @@ class MainWindow(QMainWindow):
         self._startup_update_checked = False
         self.trace_center: TraceCenterDialog | None = None
         self.eeprom_view: EepromMapDialog | None = None
+        self.iar_migration_view: IarProjectMigrationDialog | None = None
         self._restoring_state = True
         self._cache_dirty = False
         self._cache_generation = 0
@@ -460,6 +462,11 @@ class MainWindow(QMainWindow):
         eeprom_source_action = QAction("설정에서 적용 시스템 범위 열기…", self)
         eeprom_source_action.triggered.connect(lambda: self._open_project_settings(initial_page="system"))
         eeprom_menu.addAction(eeprom_source_action)
+
+        tools_menu = self.menuBar().addMenu("도구")
+        iar_migration_action = QAction("IAR 프로젝트 복제 및 이름 변경…", self)
+        iar_migration_action.triggered.connect(self._open_iar_migration)
+        tools_menu.addAction(iar_migration_action)
 
         self.toolbar = QToolBar("주 도구", self)
         self.toolbar.setMovable(False)
@@ -986,6 +993,19 @@ class MainWindow(QMainWindow):
         if self.eeprom_view is not None:
             self.eeprom_view.deleteLater()
             self.eeprom_view = None
+
+    def _open_iar_migration(self) -> None:
+        if self.iar_migration_view is None:
+            self.iar_migration_view = IarProjectMigrationDialog(self.settings, self)
+            self.iar_migration_view.finished.connect(self._iar_migration_closed)
+        self.iar_migration_view.show()
+        self.iar_migration_view.raise_()
+        self.iar_migration_view.activateWindow()
+
+    def _iar_migration_closed(self) -> None:
+        if self.iar_migration_view is not None:
+            self.iar_migration_view.deleteLater()
+            self.iar_migration_view = None
 
     def _activate_runtime_function(self, function_id: str) -> None:
         if not self.result:
@@ -1673,6 +1693,8 @@ class MainWindow(QMainWindow):
         self.cache_timer.stop()
         if self.eeprom_view is not None:
             self.eeprom_view.close()
+        if self.iar_migration_view is not None:
+            self.iar_migration_view.close()
         if self.busy:
             self.pool.waitForDone()
             QApplication.processEvents()

@@ -49,7 +49,9 @@ class EepromSourceConfig:
         if source_type not in {"github", "local"}:
             source_type = "github" if repository_url.lower().startswith("https://github.com/") else "local"
         return cls(
-            id=str(value.get("id") or uuid.uuid4().hex),
+            id=str(value.get("id") or stable_source_id(
+                source_type, repository_url, str(value.get("branch") or "main")
+            )),
             display_name=str(value.get("display_name") or value.get("name") or "EEPROM 항목"),
             source_type=source_type,
             repository_url=repository_url,
@@ -66,6 +68,14 @@ class EepromSourceConfig:
     @property
     def is_local(self) -> bool:
         return self.source_type == "local" or not self.repository_url or not self.repository_url.lower().startswith("https://github.com/")
+
+
+def stable_source_id(source_type: str, location: str, branch: str = "main") -> str:
+    normalized = str(location or "").strip()
+    if source_type == "local" and normalized:
+        normalized = os.path.normcase(os.path.abspath(normalized))
+    identity = f"{source_type.strip().lower()}|{normalized}|{branch.strip()}"
+    return "auto-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
 
 @dataclass(slots=True)
@@ -171,10 +181,12 @@ def load_source_configs(settings, current_root: str = "") -> list[EepromSourceCo
         return defaults
     if current_root:
         root = Path(current_root)
-        return [EepromSourceConfig.create(
-            root.name or "현재 프로젝트",
+        resolved = str(root.resolve())
+        return [EepromSourceConfig(
+            id=stable_source_id("local", resolved),
+            display_name=root.name or "현재 프로젝트",
             source_type="local",
-            repository_url=str(root.resolve()),
+            repository_url=resolved,
         )]
     return []
 

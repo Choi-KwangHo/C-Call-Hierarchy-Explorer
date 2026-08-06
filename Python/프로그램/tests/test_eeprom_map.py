@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from eeprom_map import (
     EepromSourceConfig, analyze_eeprom_source, parse_github_location,
-    save_source_configs, source_revision,
+    load_source_configs, save_source_configs, source_revision,
 )
 
 
@@ -25,6 +25,15 @@ class MemorySettings:
 
 
 class EepromMapTests(unittest.TestCase):
+    def test_implicit_local_source_id_is_stable_across_restarts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            missing_catalog = Path(temporary) / "missing-eeprom-sources.json"
+            with patch("eeprom_map.default_catalog_path", return_value=missing_catalog):
+                first = load_source_configs(MemorySettings(), temporary)
+                second = load_source_configs(MemorySettings(), temporary)
+            self.assertEqual(first[0].id, second[0].id)
+            self.assertTrue(first[0].id.startswith("auto-"))
+
     def test_github_repository_and_tree_urls_are_normalized(self) -> None:
         clone, branch, subpath = parse_github_location(
             "https://github.com/Esol-Lab/Susan-Heavy-duty-lift-48V.git", "main"

@@ -240,7 +240,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.3.6")
+        self.assertEqual(APP_VERSION, "1.4.0")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
@@ -310,20 +310,19 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertTrue(dialog.scope_card.isHidden())
             self.assertFalse(dialog.no_results.isHidden())
             self.assertIn("타이", dialog.no_results_detail.text())
-            self.assertEqual(dialog.categories.count(), 4)
-            self.assertEqual(dialog.categories.item(1).text().strip(), "프로젝트 분석 범위")
-            self.assertEqual(dialog.categories.item(2).text(), "적용 시스템 범위")
-            self.assertFalse(bool(dialog.categories.item(0).flags() & Qt.ItemIsSelectable))
-            self.assertFalse(bool(dialog.categories.item(2).flags() & Qt.ItemIsSelectable))
-            self.assertGreaterEqual(dialog.categories.item(1).sizeHint().height(), 34)
+            self.assertEqual(dialog.categories.count(), 2)
+            self.assertEqual(dialog.categories.item(0).text(), "프로젝트 분석 범위")
+            self.assertEqual(dialog.categories.item(1).text(), "EEPROM 소스 및 동기화")
+            self.assertGreaterEqual(dialog.categories.item(0).sizeHint().height(), 40)
             dialog.search.setText("EEPROM")
-            self.assertEqual(dialog.categories.currentRow(), 3)
+            self.assertEqual(dialog.categories.currentRow(), 1)
             self.assertFalse(dialog.eeprom_panel.isHidden())
             dialog.close()
 
             window = MainWindow()
             menu_titles = [action.text() for action in window.menuBar().actions()]
             self.assertEqual(menu_titles[:2], ["파일", "설정"])
+            self.assertIn("도구", menu_titles)
             window.close()
 
     def test_code_preview_distinguishes_parent_children_and_external_calls(self) -> None:

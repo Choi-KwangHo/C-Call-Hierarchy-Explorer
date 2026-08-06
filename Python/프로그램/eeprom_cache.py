@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pickle
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
@@ -47,8 +48,19 @@ class EepromResultCacheStore:
                 result.config = config
                 return result
             return None
-        except (OSError, EOFError, pickle.PickleError, AttributeError, ValueError, TypeError):
+        except (EOFError, pickle.PickleError, AttributeError, ValueError, TypeError):
+            self._quarantine(path)
             return None
+        except OSError:
+            return None
+
+    @staticmethod
+    def _quarantine(path: Path) -> None:
+        try:
+            quarantine = path.with_suffix(path.suffix + f".corrupt-{int(time.time())}")
+            path.replace(quarantine)
+        except OSError:
+            pass
 
     def save(self, result: EepromMapResult) -> Path:
         self.base_directory.mkdir(parents=True, exist_ok=True)

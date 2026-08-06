@@ -122,6 +122,20 @@ class EepromUiTests(unittest.TestCase):
             })
             self.assertIsNone(store.load(changed))
 
+    def test_corrupt_result_cache_is_quarantined_without_blocking_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = EepromSourceConfig.create(
+                "Cached firmware", source_type="local", repository_url=str(root),
+            )
+            store = EepromResultCacheStore(root / "cache")
+            cache_path = store.path_for(config)
+            cache_path.parent.mkdir(parents=True)
+            cache_path.write_bytes(b"not a valid cache")
+            self.assertIsNone(store.load(config))
+            self.assertFalse(cache_path.exists())
+            self.assertEqual(len(list(cache_path.parent.glob(cache_path.name + ".corrupt-*"))), 1)
+
     def test_switching_source_cancels_old_transaction_and_clears_stale_view(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
