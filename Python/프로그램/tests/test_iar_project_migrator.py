@@ -1,11 +1,13 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from iar_project_migrator import (
     MigrationError, MigrationOptions, inspect_iar_workspace, migrate_iar_project,
     preview_iar_migration, synchronize_cubemx_ioc, synchronize_ewp_project_name,
 )
+from iar_settings_backup import create_settings_backup, load_settings_backup
 
 
 def options(source: Path, target: Path) -> MigrationOptions:
@@ -16,6 +18,33 @@ def options(source: Path, target: Path) -> MigrationOptions:
 
 
 class IarProjectMigratorTests(unittest.TestCase):
+    @staticmethod
+    def _write_debug_settings(ewarm: Path) -> Path:
+        settings = ewarm / "settings"
+        settings.mkdir(parents=True)
+        dbgdt = (
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Project><WindowStorage><ChildIdMap><WIN_STATIC_WATCH>7</WIN_STATIC_WATCH>"
+            "</ChildIdMap><Desktop><IarPane-7><expressions>"
+            "<item>present_value</item><item>removed_value</item><item></item>"
+            "</expressions></IarPane-7></Desktop></WindowStorage></Project>"
+        )
+        (settings / "OLD_BOARD_ClassB.dbgdt").write_text(dbgdt, encoding="utf-8")
+        (settings / "OLD_BOARD_ClassB.dnx").write_text(
+            "<settings><EventLog><LogEnabled>1</LogEnabled></EventLog>"
+            "<SWOTraceHWSettings><ITMlogFile>$PROJ_DIR$\\OLD_BOARD.log</ITMlogFile>"
+            "</SWOTraceHWSettings></settings>", encoding="utf-8",
+        )
+        (settings / "OLD_BOARD_ClassB.crun").write_text(
+            "<crun><filter_entries><filter><action_log>1</action_log></filter>"
+            "</filter_entries></crun>", encoding="utf-8",
+        )
+        (settings / "Project.wsdt").write_text(
+            "<Workspace><ConfigDictionary><CurrentConfigs><Project>OLD_BOARD/OLD_BOARD"
+            "</Project></CurrentConfigs></ConfigDictionary></Workspace>", encoding="utf-8",
+        )
+        return settings
+
     def test_transactional_clone_renames_and_rewrites_iar_and_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -218,6 +247,56 @@ class IarProjectMigratorTests(unittest.TestCase):
             same_name = MigrationOptions(str(source), str(target), "OLD_BOARD", "OLD_BOARD")
             migrate_iar_project(same_name)
             self.assertTrue((target / "main.c").is_file())
+
+    def test_live_watch_and_ctrace_are_restored_and_missing_variable_is_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "old" / "Firmware"
+            ewarm = source / "EWARM"
+            ewarm.mkdir(parents=True)
+            workspace = ewarm / "OLD_BOARD.eww"
+            workspace.write_text("<workspace>OLD_BOARD</workspace>", encoding="utf-8")
+            self._write_debug_settings(ewarm)
+            (source / "main.c").write_text("int present_value;", encoding="utf-8")
+            target = root / "new" / "Firmware"
+            configured = options(source, target)
+            configured.source_workspace = str(workspace)
+            configured.copy_live_watch = True
+            configured.copy_ctrace = True
+
+            result = migrate_iar_project(configured)
+
+            restored = target / "EWARM" / "settings"
+            self.assertTrue((restored / "NEW-BOARD_ClassB.dnx").is_file())
+            self.assertTrue((restored / "NEW-BOARD_ClassB.crun").is_file())
+            dbgdt = (restored / "NEW-BOARD_ClassB.dbgdt").read_text(encoding="utf-8")
+            self.assertIn("present_value", dbgdt)
+            self.assertNotIn("removed_value", dbgdt)
+            self.assertEqual(result.watch_expressions_retained, 1)
+            self.assertEqual(result.watch_expressions_omitted, ["removed_value"])
+            self.assertEqual(result.settings_files_written, 4)
+            self.assertIn("NEW-BOARD.log", (restored / "NEW-BOARD_ClassB.dnx").read_text(encoding="utf-8"))
+
+    def test_project_scoped_backup_and_external_folder_autoload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ewarm = root / "source" / "EWARM"
+            ewarm.mkdir(parents=True)
+            workspace = ewarm / "OLD_BOARD.eww"
+            workspace.write_text("<workspace />", encoding="utf-8")
+            self._write_debug_settings(ewarm)
+            backup_root = root / "appdata-backups"
+
+            saved = create_settings_backup(workspace, "OLD_BOARD", "live_watch", backup_root)
+            self.assertEqual(saved.parents[2], backup_root)
+            self.assertEqual(saved.parents[1].name, "OLD_BOARD")
+            manifest = json.loads((saved / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["category"], "live_watch")
+
+            # Selecting the parent project folder automatically resolves the
+            # newest compatible snapshot below it.
+            loaded = load_settings_backup(backup_root / "OLD_BOARD", "live_watch")
+            self.assertTrue(any(name.endswith(".dbgdt") for name in loaded.files))
 
 
 if __name__ == "__main__":

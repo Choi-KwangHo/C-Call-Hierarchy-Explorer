@@ -240,7 +240,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "1.4.1")
+        self.assertEqual(APP_VERSION, "1.4.2")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:
@@ -327,8 +327,9 @@ class AppIntegrationTests(unittest.TestCase):
             tools_action = next(action for action in window.menuBar().actions() if action.text() == "도구")
             tools_menu = tools_action.menu()
             tool_titles = [action.text() for action in tools_menu.actions()]
-            self.assertIn("AT24C128 메모리 맵 열기…", tool_titles)
-            self.assertIn("IAR 프로젝트 복제 및 이름 변경…", tool_titles)
+            self.assertIn("EEPROM 메모리 맵…", tool_titles)
+            self.assertIn("EEPROM 소스 설정…", tool_titles)
+            self.assertIn("IAR 프로젝트 복제…", tool_titles)
             window.close()
 
     def test_code_preview_distinguishes_parent_children_and_external_calls(self) -> None:

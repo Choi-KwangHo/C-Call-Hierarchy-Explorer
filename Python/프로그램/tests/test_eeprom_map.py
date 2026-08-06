@@ -242,6 +242,34 @@ class EepromMapTests(unittest.TestCase):
             self.assertIn("읽기", actual[0].access)
             self.assertIn("쓰기", actual[0].access)
 
+    def test_named_at24_page_keeps_physical_page_separate_from_crc_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "memory.c").write_text(
+                """
+                typedef unsigned short vu16;
+                #define EEPROM_PAGE_SIZE 64
+                #define EEPROM_ADDR_PAGE7 0x01C0
+                #define EEPROM_ADDR_PAGE8 (EEPROM_ADDR_PAGE7 + EEPROM_PAGE_SIZE)
+                vu16 eeprom_crc[8];
+                void load(void) {
+                    AT24Cxx_read_byte_buffer(device, (unsigned char*)&eeprom_crc,
+                                             EEPROM_ADDR_PAGE8, sizeof(eeprom_crc));
+                }
+                """,
+                encoding="utf-8",
+            )
+            result = analyze_eeprom_source(
+                EepromSourceConfig.create("crc-page", repository_url=str(root)), "", root / "cache"
+            )
+            region = next(item for item in result.regions if item.name == "EEPROM_ADDR_PAGE8")
+            self.assertEqual(region.address, 0x0200)
+            self.assertEqual(region.payload_size, 16)
+            self.assertEqual(region.size, 64)
+            self.assertEqual(region.size - region.payload_size, 48)
+            self.assertTrue(region.definition_present)
+            self.assertTrue(region.actual_usage)
+
     def test_local_source_change_updates_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

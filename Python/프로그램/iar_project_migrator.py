@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+from iar_settings_backup import (
+    IarSettingsBundle, IarSettingsError, bundle_from_workspace,
+    load_settings_backup, restore_settings_to_project,
+)
+
 
 # Stand-alone use defaults.  The integrated UI supplies these values directly.
 SOURCE_ROOT = r""
@@ -49,6 +54,11 @@ class MigrationOptions:
     new_embedded_path: str = ""
     replace_source_text: bool = True
     rename_directories: bool = True
+    source_workspace: str = ""
+    copy_live_watch: bool = False
+    copy_ctrace: bool = False
+    live_watch_backup_dir: str = ""
+    ctrace_backup_dir: str = ""
 
 
 @dataclass(slots=True)
@@ -73,6 +83,9 @@ class MigrationResult:
     events: list[MigrationEvent] = field(default_factory=list)
     omitted_events: int = 0
     warnings: list[str] = field(default_factory=list)
+    settings_files_written: int = 0
+    watch_expressions_retained: int = 0
+    watch_expressions_omitted: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -470,6 +483,85 @@ def _renamed_directory_relative(relative: Path, options: MigrationOptions) -> Pa
     return Path(*(part.replace(options.old_keyword, options.new_keyword) for part in relative.parts))
 
 
+def _source_workspace(options: MigrationOptions, source: Path) -> Path:
+    if options.source_workspace:
+        workspace = Path(options.source_workspace).expanduser().resolve(strict=True)
+        if workspace.suffix.casefold() != ".eww":
+            raise MigrationError("IAR 설정 복원 기준 파일은 .eww 워크스페이스여야 합니다.")
+        return workspace
+    workspaces = sorted(source.rglob("*.eww"))
+    if not workspaces:
+        raise MigrationError("IAR 설정 복원을 위한 원본 .eww 파일을 찾지 못했습니다.")
+    return workspaces[0]
+
+
+def _settings_bundles(
+    options: MigrationOptions,
+    source: Path,
+) -> tuple[IarSettingsBundle | None, IarSettingsBundle | None]:
+    if not options.copy_live_watch and not options.copy_ctrace:
+        return None, None
+    workspace = _source_workspace(options, source)
+    try:
+        live = (
+            load_settings_backup(options.live_watch_backup_dir, "live_watch")
+            if options.copy_live_watch and options.live_watch_backup_dir
+            else bundle_from_workspace(workspace, options.old_keyword, "live_watch")
+            if options.copy_live_watch else None
+        )
+        ctrace = (
+            load_settings_backup(options.ctrace_backup_dir, "ctrace")
+            if options.copy_ctrace and options.ctrace_backup_dir
+            else bundle_from_workspace(workspace, options.old_keyword, "ctrace")
+            if options.copy_ctrace else None
+        )
+    except (IarSettingsError, OSError) as error:
+        raise MigrationError(str(error)) from error
+    return live, ctrace
+
+
+def _replace_setting_text(text: str, options: MigrationOptions) -> str:
+    text, _ = _replace_paths(text, options.old_embedded_path, options.new_embedded_path)
+    text, _ = _replace_paths(text, options.source_root, options.target_root)
+    if options.old_keyword != options.new_keyword:
+        text = text.replace(options.old_keyword, options.new_keyword)
+    return text
+
+
+def _preview_settings(
+    options: MigrationOptions,
+    source: Path,
+    target: Path,
+    result: MigrationResult,
+    progress: Callable[[MigrationEvent], None] | None,
+) -> None:
+    live, ctrace = _settings_bundles(options, source)
+    workspace = _source_workspace(options, source)
+    try:
+        workspace_relative = workspace.relative_to(source)
+        settings_target = target / _renamed_relative(workspace_relative, options).parent / "settings"
+    except ValueError:
+        settings_target = target / "EWARM" / "settings"
+    seen: set[str] = set()
+    for bundle, label in ((live, "Live Watch"), (ctrace, "C-Trace")):
+        if bundle is None:
+            continue
+        for name in sorted(bundle.files):
+            key = Path(name).suffix.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            output_name = name.replace(options.old_keyword, options.new_keyword)
+            _log(
+                result,
+                MigrationEvent(
+                    "settings_preview", str(Path(bundle.root) / name),
+                    str(settings_target / output_name), f"{label} 설정 복원 예정",
+                ),
+                progress,
+            )
+
+
 def preview_iar_migration(
     options: MigrationOptions,
     progress: Callable[[MigrationEvent], None] | None = None,
@@ -537,6 +629,7 @@ def preview_iar_migration(
                 ),
                 progress,
             )
+    _preview_settings(options, source, target, result, progress)
     _log(result, MigrationEvent("preview_complete", str(source), str(target), "사전 검사 완료"), progress)
     return result
 
@@ -606,6 +699,35 @@ def migrate_iar_project(
             _cancelled(cancelled)
             _modify_text_file(destination, options, result, progress)
 
+        live_bundle, ctrace_bundle = _settings_bundles(options, source)
+        if live_bundle is not None or ctrace_bundle is not None:
+            _cancelled(cancelled)
+            source_workspace = _source_workspace(options, source)
+            try:
+                workspace_relative = source_workspace.relative_to(source)
+                settings_dir = staging / _renamed_relative(workspace_relative, options).parent / "settings"
+            except ValueError:
+                settings_dir = None
+            try:
+                settings_result = restore_settings_to_project(
+                    staging, options.old_keyword, options.new_keyword,
+                    options.old_embedded_path, options.new_embedded_path,
+                    live_bundle, ctrace_bundle,
+                    lambda text: _replace_setting_text(text, options),
+                    settings_dir,
+                )
+            except IarSettingsError as error:
+                raise MigrationError(str(error)) from error
+            result.settings_files_written = len(settings_result.written_files)
+            result.watch_expressions_retained = len(settings_result.retained_watch_expressions)
+            result.watch_expressions_omitted = settings_result.omitted_watch_expressions
+            for path in settings_result.written_files:
+                _log(result, MigrationEvent("settings_restore", "", path, "IAR 사용자 설정 복원"), progress)
+            for expression in settings_result.omitted_watch_expressions:
+                warning = f"대상 소스에서 찾지 못해 Live Watch 항목 제외: {expression}"
+                result.warnings.append(warning)
+                _log(result, MigrationEvent("watch_omit", expression, detail=warning), progress)
+
         _cancelled(cancelled)
         if not target.parent.exists():
             target.parent.mkdir(parents=True, exist_ok=False)
@@ -648,6 +770,8 @@ def format_event(event: MigrationEvent) -> str:
         "modify": "내부 치환", "would_modify": "내부 치환 예정", "skip_dir": "폴더 제외", "skip_file": "파일 제외",
         "warning": "경고", "complete": "완료", "preview_complete": "사전 검사 완료",
         "preserve": "기존 대상 보존",
+        "settings_preview": "설정 복원 예정", "settings_restore": "설정 복원",
+        "watch_omit": "Live Watch 제외",
     }
     label = labels.get(event.action, event.action)
     route = event.source

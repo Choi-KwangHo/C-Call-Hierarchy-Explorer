@@ -921,7 +921,15 @@ def _infer_regions(
             payload_size = size or config.page_size
             lowered = function.casefold()
             wrapper_uses_full_page = function in {"EEPROM_Read", "EEPROM_Write"}
-            size = config.page_size if wrapper_uses_full_page else payload_size
+            named_physical_page = bool(
+                re.search(r"(?:^|_)ADDR_PAGE\d+$", address_name, re.I)
+                and address_name in origins
+                and address % config.page_size == 0
+            )
+            # A direct AT24Cxx call may transfer only sizeof(payload), while an
+            # EEPROM_ADDR_PAGEn macro still reserves one complete physical page.
+            # Keep transfer bytes and reserved bytes as separate facts.
+            size = config.page_size if (wrapper_uses_full_page or named_physical_page) else payload_size
             access = "쓰기" if any(word in lowered for word in ("write", "save", "store", "program")) else "읽기" if any(word in lowered for word in ("read", "load", "get")) else "접근"
             line = source.count("\n", 0, start) + 1
             evidence_items = [evidence_item(access, path, line)]
@@ -982,6 +990,8 @@ def _infer_regions(
         )
         if existing is not None:
             existing.definition_present = True
+            if "ADDR_PAGE" in upper and address % config.page_size == 0:
+                existing.size = max(existing.size, config.page_size)
             continue
         regions.append(EepromRegion(
             name, address, size, address // config.page_size, struct_name,

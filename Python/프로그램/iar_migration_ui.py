@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
+    QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (
 from iar_project_migrator import (
     IarWorkspaceInfo, MigrationCancelled, MigrationError, MigrationEvent, MigrationOptions, MigrationResult,
     format_event, inspect_iar_workspace, migrate_iar_project, preview_iar_migration,
+)
+from iar_settings_backup import (
+    IarSettingsError, create_settings_backup, default_backup_root,
+    discover_settings_files, load_settings_backup,
 )
 from window_state import apply_dark_title_bar, restore_window_state, save_window_state
 
@@ -64,6 +68,8 @@ class IarProjectMigrationDialog(QDialog):
         self.pool.setMaxThreadCount(1)
         self.last_result: MigrationResult | None = None
         self.workspace_info: IarWorkspaceInfo | None = None
+        self.live_watch_backup_dir = ""
+        self.ctrace_backup_dir = ""
         self.setWindowTitle("IAR 프로젝트 복제 및 이름 변경")
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.setSizeGripEnabled(True)
@@ -128,6 +134,31 @@ class IarProjectMigrationDialog(QDialog):
         for edit in (self.new_first_path_edit, self.new_name, self.new_second_folder_edit):
             edit.textChanged.connect(self._update_action_state)
         layout.addWidget(form_frame)
+
+        settings_frame = QFrame()
+        settings_frame.setObjectName("section")
+        settings_layout = QVBoxLayout(settings_frame)
+        settings_layout.setContentsMargins(14, 10, 14, 10)
+        settings_layout.setSpacing(7)
+        settings_title = QLabel("IAR 디버그 설정")
+        settings_title.setStyleSheet("font-weight:600; color:#F2F6F8;")
+        settings_help = QLabel(
+            "선택한 설정은 새 프로젝트의 EWARM/settings에 복원됩니다. "
+            "Live Watch에서 대상 코드에 존재하지 않는 변수만 제외합니다."
+        )
+        settings_help.setObjectName("subtitle")
+        settings_help.setWordWrap(True)
+        settings_layout.addWidget(settings_title)
+        settings_layout.addWidget(settings_help)
+        self.live_watch_check, self.live_watch_source = self._settings_row(
+            settings_layout, "Live Watch 복사", self._backup_live_watch, self._load_live_watch,
+            self._clear_live_watch_backup,
+        )
+        self.ctrace_check, self.ctrace_source = self._settings_row(
+            settings_layout, "C-Trace 복사", self._backup_ctrace, self._load_ctrace,
+            self._clear_ctrace_backup,
+        )
+        layout.addWidget(settings_frame)
 
         command_row = QHBoxLayout()
         self.preview_button = QPushButton("사전 검사")
@@ -220,6 +251,26 @@ class IarProjectMigrationDialog(QDialog):
         layout.addRow(label, row)
         return edit
 
+    def _settings_row(self, layout: QVBoxLayout, caption: str, backup, load, clear):
+        row = QHBoxLayout()
+        check = QCheckBox(caption)
+        row.addWidget(check)
+        source = QLabel("원본 프로젝트 설정 자동 감지")
+        source.setObjectName("subtitle")
+        source.setToolTip(source.text())
+        row.addWidget(source, 1)
+        backup_button = QPushButton("백업")
+        backup_button.clicked.connect(backup)
+        row.addWidget(backup_button)
+        load_button = QPushButton("불러오기…")
+        load_button.clicked.connect(load)
+        row.addWidget(load_button)
+        clear_button = QPushButton("원본 사용")
+        clear_button.clicked.connect(clear)
+        row.addWidget(clear_button)
+        layout.addLayout(row)
+        return check, source
+
     def _browse_workspace(self) -> None:
         start = self.workspace_edit.text().strip() or str(Path.home())
         selected, _ = QFileDialog.getOpenFileName(
@@ -251,11 +302,93 @@ class IarProjectMigrationDialog(QDialog):
             f"원본 2차 폴더: {info.second_folder} · 프로젝트: {info.project_keyword} · "
             f"IAR 참조 {project_count}개 · CubeMX .ioc {cubemx_count}개 · {info.encoding}"
         )
+        detected = discover_settings_files(info.workspace_file)
+        live_state = "감지됨" if ".dbgdt" in detected else "없음"
+        trace_count = sum(1 for extension in (".crun", ".dnx", ".dbgdt", ".wsdt") if extension in detected)
+        if not self.live_watch_backup_dir:
+            self.live_watch_source.setText(f"원본 설정 · {live_state}")
+            self.live_watch_source.setToolTip(str(detected.get(".dbgdt", "Live Watch 설정 없음")))
+        if not self.ctrace_backup_dir:
+            self.ctrace_source.setText(f"원본 설정 · {trace_count}/4 파일 감지")
+            self.ctrace_source.setToolTip("\n".join(str(path) for path in detected.values()))
         self.status.setText(
             "워크스페이스 자동 인식 완료 · 새 1차 폴더 경로를 다른 위치로 지정하십시오."
         )
         self._update_action_state()
         return True
+
+    def _require_workspace(self) -> IarWorkspaceInfo | None:
+        if self.workspace_info is None:
+            QMessageBox.warning(self, "IAR 설정", "기존 IAR 워크스페이스(.eww)를 먼저 선택하십시오.")
+            return None
+        return self.workspace_info
+
+    def _create_backup(self, category: str) -> None:
+        info = self._require_workspace()
+        if info is None:
+            return
+        try:
+            destination = create_settings_backup(info.workspace_file, info.project_keyword, category)
+        except (IarSettingsError, OSError) as error:
+            QMessageBox.warning(self, "IAR 설정 백업", str(error))
+            return
+        label = "Live Watch" if category == "live_watch" else "C-Trace"
+        QMessageBox.information(
+            self, "IAR 설정 백업 완료",
+            f"{label} 설정을 프로젝트별 응용 프로그램 데이터 폴더에 백업했습니다.\n\n{destination}",
+        )
+
+    def _load_backup(self, category: str) -> None:
+        info = self.workspace_info
+        project = info.project_keyword if info else ""
+        start = default_backup_root() / project if project else default_backup_root()
+        if not start.exists():
+            start = default_backup_root()
+        selected = QFileDialog.getExistingDirectory(
+            self, "IAR 설정 백업 폴더 선택", str(start)
+        )
+        if not selected:
+            return
+        try:
+            bundle = load_settings_backup(selected, category)
+        except (IarSettingsError, OSError) as error:
+            QMessageBox.warning(self, "IAR 설정 불러오기", str(error))
+            return
+        if category == "live_watch":
+            self.live_watch_backup_dir = bundle.root
+            self.live_watch_check.setChecked(True)
+            label = self.live_watch_source
+        else:
+            self.ctrace_backup_dir = bundle.root
+            self.ctrace_check.setChecked(True)
+            label = self.ctrace_source
+        label.setText(f"백업 불러옴 · {Path(bundle.root).name}")
+        label.setToolTip(bundle.manifest_path or bundle.root)
+        self._update_action_state()
+
+    def _backup_live_watch(self) -> None:
+        self._create_backup("live_watch")
+
+    def _backup_ctrace(self) -> None:
+        self._create_backup("ctrace")
+
+    def _load_live_watch(self) -> None:
+        self._load_backup("live_watch")
+
+    def _load_ctrace(self) -> None:
+        self._load_backup("ctrace")
+
+    def _clear_live_watch_backup(self) -> None:
+        self.live_watch_backup_dir = ""
+        self.live_watch_source.setText("원본 프로젝트 설정 자동 감지")
+        if self.workspace_info:
+            self._load_workspace(self.workspace_info.workspace_file, notify=False)
+
+    def _clear_ctrace_backup(self) -> None:
+        self.ctrace_backup_dir = ""
+        self.ctrace_source.setText("원본 프로젝트 설정 자동 감지")
+        if self.workspace_info:
+            self._load_workspace(self.workspace_info.workspace_file, notify=False)
 
     def _workspace_path_edited(self) -> None:
         if self.workspace_info and Path(self.workspace_edit.text().strip()) != Path(self.workspace_info.workspace_file):
@@ -310,6 +443,11 @@ class IarProjectMigrationDialog(QDialog):
             new_embedded_path=f"{first_path.name}\\{second}",
             replace_source_text=True,
             rename_directories=True,
+            source_workspace=self.workspace_info.workspace_file,
+            copy_live_watch=self.live_watch_check.isChecked(),
+            copy_ctrace=self.ctrace_check.isChecked(),
+            live_watch_backup_dir=self.live_watch_backup_dir,
+            ctrace_backup_dir=self.ctrace_backup_dir,
         )
 
     def _update_action_state(self) -> None:
@@ -350,6 +488,7 @@ class IarProjectMigrationDialog(QDialog):
                 "원본은 변경하지 않습니다. 대상 폴더가 이미 있으면 기존 파일을 보존하고,\n"
                 "같은 상대 경로의 파일이 있을 때는 덮어쓰지 않고 작업을 중단합니다.\n"
                 "CubeMX .ioc는 프로젝트 식별 항목만 변경하고 하드웨어 설정을 검증합니다.\n"
+                "선택한 Live Watch/C-Trace 설정은 프로젝트명과 경로를 동기화해 복원합니다.\n"
                 "계속하시겠습니까?",
             )
             if answer != QMessageBox.Yes:
@@ -399,7 +538,9 @@ class IarProjectMigrationDialog(QDialog):
                 self, "IAR 프로젝트 복제 완료",
                 f"새 프로젝트를 생성했습니다.\n\n{result.target_root}\n\n"
                 f"복사 {result.copied_files:,}개 · 이름 변경 {result.renamed_files:,}개 · "
-                f"내부 수정 {result.modified_files:,}개",
+                f"내부 수정 {result.modified_files:,}개 · 설정 복원 {result.settings_files_written:,}개\n"
+                f"Live Watch 유지 {result.watch_expressions_retained:,}개 · "
+                f"없는 변수 제외 {len(result.watch_expressions_omitted):,}개",
             )
 
     def _error(self, error: BaseException) -> None:
@@ -438,6 +579,24 @@ class IarProjectMigrationDialog(QDialog):
         saved_first = str(self.settings.value("iarMigration/newFirstPath", "") or "")
         saved_name = str(self.settings.value("iarMigration/newKeyword", "") or "")
         saved_second = str(self.settings.value("iarMigration/newSecondFolder", "") or "")
+        self.live_watch_check.setChecked(
+            str(self.settings.value("iarMigration/copyLiveWatch", "false")).lower() == "true"
+        )
+        self.ctrace_check.setChecked(
+            str(self.settings.value("iarMigration/copyCTrace", "false")).lower() == "true"
+        )
+        self.live_watch_backup_dir = str(self.settings.value("iarMigration/liveWatchBackupDir", "") or "")
+        self.ctrace_backup_dir = str(self.settings.value("iarMigration/cTraceBackupDir", "") or "")
+        if self.live_watch_backup_dir and Path(self.live_watch_backup_dir).is_dir():
+            self.live_watch_source.setText(f"백업 불러옴 · {Path(self.live_watch_backup_dir).name}")
+            self.live_watch_source.setToolTip(self.live_watch_backup_dir)
+        else:
+            self.live_watch_backup_dir = ""
+        if self.ctrace_backup_dir and Path(self.ctrace_backup_dir).is_dir():
+            self.ctrace_source.setText(f"백업 불러옴 · {Path(self.ctrace_backup_dir).name}")
+            self.ctrace_source.setToolTip(self.ctrace_backup_dir)
+        else:
+            self.ctrace_backup_dir = ""
         if workspace and Path(workspace).is_file() and self._load_workspace(workspace, notify=False):
             if saved_first:
                 self.new_first_path_edit.setText(saved_first)
@@ -457,6 +616,10 @@ class IarProjectMigrationDialog(QDialog):
             (self.new_second_folder_edit, "newSecondFolder"),
         ):
             self.settings.setValue(f"iarMigration/{key}", widget.text().strip())
+        self.settings.setValue("iarMigration/copyLiveWatch", self.live_watch_check.isChecked())
+        self.settings.setValue("iarMigration/copyCTrace", self.ctrace_check.isChecked())
+        self.settings.setValue("iarMigration/liveWatchBackupDir", self.live_watch_backup_dir)
+        self.settings.setValue("iarMigration/cTraceBackupDir", self.ctrace_backup_dir)
         self.settings.sync()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
