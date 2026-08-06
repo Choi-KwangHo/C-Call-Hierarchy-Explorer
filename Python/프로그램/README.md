@@ -2,12 +2,12 @@
 
 `.c`와 `.h` 파일을 Tree-sitter로 빠르게 파싱하고, libclang으로 실제 심볼 참조를 보강한 뒤 PySide6 가상 스크롤 UI에 호출 단계를 표시합니다.
 
-현재 개발 소스와 배포 버전은 `1.4.2`입니다. `Python\배포\C Call Hierarchy Explorer 1.4.2` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
+현재 개발 소스와 배포 버전은 `1.4.3`입니다. `Python\배포\C Call Hierarchy Explorer 1.4.3` 폴더의 배포 파일에는 PySide6, Tree-sitter, tree-sitter-c, libclang이 포함되므로 대상 PC에 Python을 별도로 설치할 필요가 없습니다.
 
 ## 설치 배포본
 
-- `C-Call-Hierarchy-Explorer-Setup-1.4.2.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
-- `C-Call-Hierarchy-Explorer-Portable-1.4.2.exe`: 설치 없이 실행하는 포터블 버전입니다.
+- `C-Call-Hierarchy-Explorer-Setup-1.4.3.exe`: 현재 사용자 계정에 설치하고 바탕 화면·시작 메뉴 바로가기를 생성합니다.
+- `C-Call-Hierarchy-Explorer-Portable-1.4.3.exe`: 설치 없이 실행하는 포터블 버전입니다.
 - Windows 설정의 **설치된 앱**에서 제거할 수 있습니다.
 - `packaging\build_release.ps1`은 실행 파일 진단, 설치 파일 생성, SHA-256 파일 생성을 자동으로 수행합니다.
 
@@ -71,6 +71,7 @@ py -3 -m venv .venv
 22. 메인 창과 EEPROM View는 모니터 구성(수·이름·해상도·배치)이 같으면 마지막 일반 창 위치·크기와 최대화/전체 화면 상태를 복원합니다. 모니터 구성이 바뀌었거나 저장 좌표가 화면 밖이면 상태를 초기화하고 주 모니터 중앙의 기본 크기로 엽니다. EEPROM 내부 분할 영역의 크기도 함께 기억합니다.
 23. **도구 → IAR 프로젝트 복제…**는 기존 EWARM `.eww`를 열면 원본 1차·2차 폴더와 프로젝트 핵심 이름을 자동 인식합니다. 사용자는 새 1차 폴더 경로, 새 프로젝트 이름, 새 2차 폴더명만 확인·변경합니다. 새 1차 폴더 경로가 원본과 달라야 복제가 활성화되며 프로젝트명과 2차 폴더명은 그대로 사용할 수 있습니다. `.eww/.ewp/.ewd/.ewt`와 CubeMX `.ioc` 파일명을 동기화하고, `.ioc`는 `ProjectManager` 식별 항목만 변경한 뒤 MCU·핀·클록·미들웨어 설정 보존을 검증합니다. `.mxproject`는 보존하되 명시적인 이전 경로 값만 제한적으로 동기화합니다. `Debug`, `Release`, `.iar`, `settings`, IAR 출력 폴더, `.dep`, `.pbd`, `.git`과 심볼릭 링크는 제외합니다. 기존 대상 폴더는 보존·병합하지만 같은 상대 파일 경로가 있으면 덮어쓰지 않고 전체 작업을 중단합니다.
 24. 같은 창의 **IAR 디버그 설정**에서 Live Watch와 C-Trace를 각각 선택해 새 프로젝트의 `EWARM/settings`로 복원할 수 있습니다. `.dbgdt`, `.dnx`, `.crun`, `Project.wsdt`의 프로젝트명과 경로를 새 프로젝트에 맞게 동기화하며 Event Log, Timeline, Interrupt Log와 관련 Trace 설정을 보존합니다. Live Watch는 대상 `.c/.h` 전체에서 식별자가 확인되지 않은 항목만 제외하고 유지·제외 수와 항목을 작업 로그에 남깁니다. 각 설정의 **백업**은 `%LOCALAPPDATA%\Call Hierarchy Tools\C Call Hierarchy Explorer\iar-settings-backups\<프로젝트명>\<날짜-시간>` 아래에 원본 XML과 SHA-256 메타데이터를 저장합니다. **불러오기…**는 이 기본 위치 또는 사용자가 선택한 외부 폴더와 하위 폴더에서 최신 호환 백업을 자동 탐색하고 무결성을 검증합니다.
+25. **도구 → IAR 디버그 설정…**은 프로젝트 복제 없이 현재 `.eww`에 Live Watch/C-Trace 글로벌 설정을 적용합니다. 설치 시 제공되는 범용 샘플은 `%LOCALAPPDATA%\Call Hierarchy Tools\C Call Hierarchy Explorer\iar-global-settings\Default`에 최초 1회만 생성되며, `Global.dbgdt/.dnx/.crun`은 적용 대상 프로젝트 구성명으로 자동 변경됩니다. 대상 MCU·Flash·디버거 하드웨어 설정은 유지하고 Trace/SWO 관련 노드만 병합합니다. **현재 설정을 글로벌로 저장**하면 사용자가 IAR에서 구성한 설정을 새 기본값으로 갱신하며 이전 기본값은 `.history`에 보존합니다.
 
 ## 동작 및 성능
 

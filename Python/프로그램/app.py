@@ -27,6 +27,7 @@ from trace_ui import TraceCenterDialog
 from eeprom_map import load_source_configs, save_source_configs
 from eeprom_ui import CDeclarationHighlighter, EepromMapDialog
 from iar_migration_ui import IarProjectMigrationDialog
+from iar_debug_settings_ui import IarDebugSettingsDialog
 from theme import apply_application_dark_theme
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
@@ -38,7 +39,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -392,6 +393,7 @@ class MainWindow(QMainWindow):
         self.trace_center: TraceCenterDialog | None = None
         self.eeprom_view: EepromMapDialog | None = None
         self.iar_migration_view: IarProjectMigrationDialog | None = None
+        self.iar_debug_settings_view: IarDebugSettingsDialog | None = None
         self._restoring_state = True
         self._cache_dirty = False
         self._cache_generation = 0
@@ -462,6 +464,9 @@ class MainWindow(QMainWindow):
         eeprom_source_action.triggered.connect(lambda: self._open_project_settings(initial_page="system"))
         tools_menu.addAction(eeprom_source_action)
         tools_menu.addSeparator()
+        iar_debug_action = QAction("IAR 디버그 설정…", self)
+        iar_debug_action.triggered.connect(self._open_iar_debug_settings)
+        tools_menu.addAction(iar_debug_action)
         iar_migration_action = QAction("IAR 프로젝트 복제…", self)
         iar_migration_action.triggered.connect(self._open_iar_migration)
         tools_menu.addAction(iar_migration_action)
@@ -1004,6 +1009,19 @@ class MainWindow(QMainWindow):
         if self.iar_migration_view is not None:
             self.iar_migration_view.deleteLater()
             self.iar_migration_view = None
+
+    def _open_iar_debug_settings(self) -> None:
+        if self.iar_debug_settings_view is None:
+            self.iar_debug_settings_view = IarDebugSettingsDialog(self.settings, self)
+            self.iar_debug_settings_view.finished.connect(self._iar_debug_settings_closed)
+        self.iar_debug_settings_view.show()
+        self.iar_debug_settings_view.raise_()
+        self.iar_debug_settings_view.activateWindow()
+
+    def _iar_debug_settings_closed(self) -> None:
+        if self.iar_debug_settings_view is not None:
+            self.iar_debug_settings_view.deleteLater()
+            self.iar_debug_settings_view = None
 
     def _activate_runtime_function(self, function_id: str) -> None:
         if not self.result:
@@ -1693,6 +1711,8 @@ class MainWindow(QMainWindow):
             self.eeprom_view.close()
         if self.iar_migration_view is not None:
             self.iar_migration_view.close()
+        if self.iar_debug_settings_view is not None:
+            self.iar_debug_settings_view.close()
         if self.busy:
             self.pool.waitForDone()
             QApplication.processEvents()
