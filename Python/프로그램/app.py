@@ -38,7 +38,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -453,17 +453,15 @@ class MainWindow(QMainWindow):
         trace_center_action.triggered.connect(self._open_trace_center)
         trace_menu.addAction(trace_center_action)
 
-        eeprom_menu = self.menuBar().addMenu("EEPROM")
+        tools_menu = self.menuBar().addMenu("도구")
         eeprom_map_action = QAction("AT24C128 메모리 맵 열기…", self)
         eeprom_map_action.setShortcut("Ctrl+M")
         eeprom_map_action.triggered.connect(self._open_eeprom_map)
-        eeprom_menu.addAction(eeprom_map_action)
-        eeprom_menu.addSeparator()
+        tools_menu.addAction(eeprom_map_action)
         eeprom_source_action = QAction("설정에서 적용 시스템 범위 열기…", self)
         eeprom_source_action.triggered.connect(lambda: self._open_project_settings(initial_page="system"))
-        eeprom_menu.addAction(eeprom_source_action)
-
-        tools_menu = self.menuBar().addMenu("도구")
+        tools_menu.addAction(eeprom_source_action)
+        tools_menu.addSeparator()
         iar_migration_action = QAction("IAR 프로젝트 복제 및 이름 변경…", self)
         iar_migration_action.triggered.connect(self._open_iar_migration)
         tools_menu.addAction(iar_migration_action)

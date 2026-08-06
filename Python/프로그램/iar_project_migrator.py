@@ -5,6 +5,7 @@ import re
 import shutil
 import stat
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
@@ -19,11 +20,12 @@ OLD_EMBEDDED_PATH = ""
 NEW_EMBEDDED_PATH = ""
 
 IAR_EXTENSIONS = {".eww", ".ewp", ".ewd", ".ewt", ".ewf", ".ewg"}
+CUBEMX_EXTENSIONS = {".ioc", ".mxproject"}
 SOURCE_TEXT_EXTENSIONS = {
     ".c", ".h", ".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".s", ".asm",
     ".inc", ".icf", ".xcl", ".txt", ".xml", ".json", ".yml", ".yaml",
 }
-SKIP_DIRECTORY_NAMES = {"debug", "release", ".iar", "settings"}
+SKIP_DIRECTORY_NAMES = {"debug", "release", ".iar", "settings", ".git"}
 SKIP_FILE_EXTENSIONS = {".dep", ".pbd"}
 ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "windows-1252")
 MAX_RETAINED_EVENTS = 20_000
@@ -109,13 +111,24 @@ def inspect_iar_workspace(workspace_file: str | Path) -> IarWorkspaceInfo:
     source_root = workspace.parent.parent if workspace.parent.name.casefold() in {"ewarm", "iar"} else workspace.parent
     first = source_root.parent.name
     second = source_root.name
-    stems = [workspace.stem]
-    stems.extend(Path(reference.replace("\\", "/")).stem for reference in references)
+    generic_workspace_names = {"project", "workspace", "iar", "ewarm"}
+    candidate_stems = [Path(reference.replace("\\", "/")).stem for reference in references]
+    candidate_stems.extend(
+        path.stem for path in workspace.parent.iterdir()
+        if path.is_file() and path.suffix.casefold() in IAR_EXTENSIONS - {".eww"}
+    )
+    unique_candidates = list(dict.fromkeys(candidate_stems))
     keyword = workspace.stem
-    if len(stems) > 1:
-        common = os.path.commonprefix(stems).rstrip("_- .")
+    if unique_candidates:
+        common = os.path.commonprefix(unique_candidates).rstrip("_- .")
         if common:
             keyword = common
+        elif workspace.stem.casefold() in generic_workspace_names:
+            keyword = min(unique_candidates, key=len)
+        keyword = re.sub(
+            r"(?:[_ .-](?:class[a-z0-9]+|debug|release))$", "", keyword,
+            flags=re.IGNORECASE,
+        ) or keyword
     return IarWorkspaceInfo(
         workspace_file=str(workspace), source_root=str(source_root),
         first_folder=first, second_folder=second, project_keyword=keyword,
@@ -139,8 +152,6 @@ def validate_options(options: MigrationOptions) -> tuple[Path, Path]:
         raise MigrationError("기존 프로젝트 핵심 이름을 입력하십시오.")
     if not options.new_keyword:
         raise MigrationError("새 프로젝트 핵심 이름을 입력하십시오.")
-    if options.old_keyword == options.new_keyword:
-        raise MigrationError("기존 이름과 새 이름이 같습니다.")
     try:
         target.relative_to(source)
     except ValueError:
@@ -153,11 +164,8 @@ def validate_options(options: MigrationOptions) -> tuple[Path, Path]:
         pass
     else:
         raise MigrationError("기존 프로젝트 폴더는 새 프로젝트 폴더 내부일 수 없습니다.")
-    if target.exists() and (not target.is_dir() or any(target.iterdir())):
-        raise MigrationError(
-            "새 프로젝트 폴더가 비어 있지 않습니다. 기존 자료 보호를 위해 덮어쓰지 않습니다: "
-            f"{target}"
-        )
+    if target.exists() and not target.is_dir():
+        raise MigrationError(f"새 프로젝트 경로에 같은 이름의 파일이 있습니다: {target}")
     if target.is_symlink():
         raise MigrationError(f"새 프로젝트 폴더는 심볼릭 링크일 수 없습니다: {target}")
     return source, target
@@ -194,9 +202,17 @@ def _iter_source_files(
         kept: list[str] = []
         for name in sorted(directories, key=str.casefold):
             path = current_path / name
-            if name.casefold() in SKIP_DIRECTORY_NAMES or path.is_symlink():
+            generated_iar_output = (
+                current_path.name.casefold() in {"ewarm", "iar"}
+                and path.is_dir()
+                and any((path / child).is_dir() for child in ("Obj", "BrowseInfo", "List", "Exe"))
+            )
+            if name.casefold() in SKIP_DIRECTORY_NAMES or path.is_symlink() or generated_iar_output:
                 result.skipped_directories += 1
-                detail = "제외 폴더" if not path.is_symlink() else "심볼릭 링크 폴더 제외"
+                if generated_iar_output:
+                    detail = "IAR 빌드 산출물 폴더 제외"
+                else:
+                    detail = "제외 폴더" if not path.is_symlink() else "심볼릭 링크 폴더 제외"
                 _log(result, MigrationEvent("skip_dir", str(path), detail=detail), progress)
             else:
                 kept.append(name)
@@ -290,7 +306,100 @@ def synchronize_ewp_project_name(text: str, project_name: str) -> tuple[str, int
 
 
 def _text_extensions(options: MigrationOptions) -> set[str]:
-    return IAR_EXTENSIONS | (SOURCE_TEXT_EXTENSIONS if options.replace_source_text else set())
+    return IAR_EXTENSIONS | CUBEMX_EXTENSIONS | (SOURCE_TEXT_EXTENSIONS if options.replace_source_text else set())
+
+
+def _is_text_file(path: Path, options: MigrationOptions) -> bool:
+    return path.name.casefold() == ".mxproject" or path.suffix.casefold() in _text_extensions(options)
+
+
+_IOC_IDENTITY_KEYS = {
+    "ProjectManager.ProjectName",
+    "ProjectManager.ProjectFileName",
+}
+
+
+def synchronize_cubemx_ioc(
+    text: str,
+    options: MigrationOptions,
+) -> tuple[str, int]:
+    """Update only CubeMX project identity/path fields and preserve all hardware settings.
+
+    STM32CubeMX .ioc files are line-oriented key/value documents.  Pin, clock,
+    middleware and code-generation options must remain byte-for-byte identical.
+    Therefore only ProjectManager identity values and ProjectManager path values
+    that actually contain the old project path/name are eligible for replacement.
+    """
+    lines = text.splitlines(keepends=True)
+    changed = 0
+    updated: list[str] = []
+    for line in lines:
+        body = line.rstrip("\r\n")
+        newline = line[len(body):]
+        if "=" not in body or body.lstrip().startswith("#"):
+            updated.append(line)
+            continue
+        key, value = body.split("=", 1)
+        if not key.startswith("ProjectManager."):
+            updated.append(line)
+            continue
+        replacement = value
+        replacement, path_count = _replace_paths(
+            replacement, options.old_embedded_path, options.new_embedded_path
+        )
+        replacement, absolute_count = _replace_paths(
+            replacement, options.source_root, options.target_root
+        )
+        keyword_count = 0
+        if (
+            key in _IOC_IDENTITY_KEYS
+            and options.old_keyword != options.new_keyword
+            and options.old_keyword in replacement
+        ):
+            keyword_count = replacement.count(options.old_keyword)
+            replacement = replacement.replace(options.old_keyword, options.new_keyword)
+        eligible = key in _IOC_IDENTITY_KEYS or path_count or absolute_count or keyword_count
+        if eligible and replacement != value:
+            changed += path_count + absolute_count + keyword_count
+            updated.append(f"{key}={replacement}{newline}")
+        else:
+            updated.append(line)
+
+    result = "".join(updated)
+    # Safety invariant: every non-ProjectManager line (MCU/pin/clock/middleware)
+    # must remain exactly unchanged, including order and line endings.
+    before_protected = [line for line in lines if not line.startswith("ProjectManager.")]
+    after_protected = [line for line in result.splitlines(keepends=True) if not line.startswith("ProjectManager.")]
+    if before_protected != after_protected:
+        raise MigrationError("CubeMX .ioc 하드웨어 설정 보존 검증에 실패했습니다.")
+    return result, changed
+
+
+def synchronize_mxproject(text: str, options: MigrationOptions) -> tuple[str, int]:
+    """Preserve CubeMX metadata and adjust only explicit migrated path values."""
+    lines = text.splitlines(keepends=True)
+    changed = 0
+    updated: list[str] = []
+    for line in lines:
+        body = line.rstrip("\r\n")
+        newline = line[len(body):]
+        if "=" not in body or body.lstrip().startswith(("#", ";")):
+            updated.append(line)
+            continue
+        key, value = body.split("=", 1)
+        replacement, embedded_count = _replace_paths(
+            value, options.old_embedded_path, options.new_embedded_path
+        )
+        replacement, absolute_count = _replace_paths(
+            replacement, options.source_root, options.target_root
+        )
+        count = embedded_count + absolute_count
+        if count and replacement != value:
+            updated.append(f"{key}={replacement}{newline}")
+            changed += count
+        else:
+            updated.append(line)
+    return "".join(updated), changed
 
 
 def _modify_text_file(
@@ -299,7 +408,7 @@ def _modify_text_file(
     result: MigrationResult,
     progress: Callable[[MigrationEvent], None] | None,
 ) -> None:
-    if path.suffix.casefold() not in _text_extensions(options):
+    if not _is_text_file(path, options):
         return
     raw = path.read_bytes()
     try:
@@ -310,12 +419,22 @@ def _modify_text_file(
         _log(result, MigrationEvent("warning", str(path), detail=warning), progress)
         return
     original = text
-    text, path_count = _replace_paths(text, options.old_embedded_path, options.new_embedded_path)
-    text, absolute_path_count = _replace_paths(text, options.source_root, options.target_root)
-    path_count += absolute_path_count
-    keyword_count = text.count(options.old_keyword)
-    if keyword_count:
-        text = text.replace(options.old_keyword, options.new_keyword)
+    if path.suffix.casefold() == ".ioc":
+        text, ioc_count = synchronize_cubemx_ioc(text, options)
+        path_count = ioc_count
+        keyword_count = 0
+    elif path.name.casefold() == ".mxproject":
+        text, path_count = synchronize_mxproject(text, options)
+        keyword_count = 0
+    else:
+        text, path_count = _replace_paths(text, options.old_embedded_path, options.new_embedded_path)
+        text, absolute_path_count = _replace_paths(text, options.source_root, options.target_root)
+        path_count += absolute_path_count
+        keyword_count = 0
+        if options.old_keyword != options.new_keyword:
+            keyword_count = text.count(options.old_keyword)
+            if keyword_count:
+                text = text.replace(options.old_keyword, options.new_keyword)
     project_count = 0
     if path.suffix.casefold() == ".ewp":
         text, project_count = synchronize_ewp_project_name(text, path.stem)
@@ -329,7 +448,8 @@ def _modify_text_file(
         result,
         MigrationEvent(
             "modify", str(path), str(path),
-            f"문자열 {keyword_count + path_count}건 · 프로젝트 표시 이름 {project_count}건 · {encoding}",
+            f"문자열 {keyword_count + path_count}건 · 프로젝트 표시 이름 {project_count}건 · {encoding}"
+            + (" · CubeMX 설정 보존 검증 완료" if path.suffix.casefold() == ".ioc" else ""),
         ),
         progress,
     )
@@ -339,7 +459,7 @@ def _renamed_relative(relative: Path, options: MigrationOptions) -> Path:
     parts = list(relative.parts)
     if options.rename_directories:
         parts[:-1] = [part.replace(options.old_keyword, options.new_keyword) for part in parts[:-1]]
-    if relative.suffix.casefold() in IAR_EXTENSIONS:
+    if relative.suffix.casefold() in IAR_EXTENSIONS | CUBEMX_EXTENSIONS:
         parts[-1] = parts[-1].replace(options.old_keyword, options.new_keyword)
     return Path(*parts)
 
@@ -358,13 +478,20 @@ def preview_iar_migration(
     source, target = validate_options(options)
     result = MigrationResult(str(source), str(target))
     destinations: set[str] = set()
+    existing_paths: set[str] = set()
+    if target.is_dir():
+        existing_paths = {
+            str(path.relative_to(target)).casefold()
+            for path in target.rglob("*")
+        }
     _log(result, MigrationEvent("preview", str(source), str(target), "사전 검사 시작"), progress)
     for source_file, relative in _iter_source_files(source, result, progress, cancelled):
         _cancelled(cancelled)
         renamed_relative = _renamed_relative(relative, options)
         destination = target / renamed_relative
         collision_key = str(destination).casefold()
-        if collision_key in destinations:
+        relative_key = str(renamed_relative).casefold()
+        if collision_key in destinations or relative_key in existing_paths:
             raise MigrationError(f"이름 변경 후 파일 경로가 충돌합니다: {renamed_relative}")
         destinations.add(collision_key)
         result.copied_files += 1
@@ -373,19 +500,28 @@ def preview_iar_migration(
             result.renamed_files += 1
         action = "rename_copy" if renamed else "copy"
         _log(result, MigrationEvent(action, str(source_file), str(destination)), progress)
-        if source_file.suffix.casefold() not in _text_extensions(options):
+        if not _is_text_file(source_file, options):
             continue
         try:
             text, _, _ = _decode_text(source_file.read_bytes())
         except (OSError, UnicodeDecodeError):
             continue
         original = text
-        text, path_count = _replace_paths(text, options.old_embedded_path, options.new_embedded_path)
-        text, absolute_path_count = _replace_paths(text, options.source_root, options.target_root)
-        path_count += absolute_path_count
-        keyword_count = text.count(options.old_keyword)
-        if keyword_count:
-            text = text.replace(options.old_keyword, options.new_keyword)
+        if source_file.suffix.casefold() == ".ioc":
+            text, path_count = synchronize_cubemx_ioc(text, options)
+            keyword_count = 0
+        elif source_file.name.casefold() == ".mxproject":
+            text, path_count = synchronize_mxproject(text, options)
+            keyword_count = 0
+        else:
+            text, path_count = _replace_paths(text, options.old_embedded_path, options.new_embedded_path)
+            text, absolute_path_count = _replace_paths(text, options.source_root, options.target_root)
+            path_count += absolute_path_count
+            keyword_count = 0
+            if options.old_keyword != options.new_keyword:
+                keyword_count = text.count(options.old_keyword)
+                if keyword_count:
+                    text = text.replace(options.old_keyword, options.new_keyword)
         project_count = 0
         if source_file.suffix.casefold() == ".ewp":
             text, project_count = synchronize_ewp_project_name(text, destination.stem)
@@ -423,10 +559,14 @@ def migrate_iar_project(
     if not staging_parent.is_dir():
         raise MigrationError(f"새 프로젝트를 생성할 상위 폴더를 찾을 수 없습니다: {target.parent}")
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.iar-migrate-", dir=staging_parent))
-    target_was_empty = target.exists()
+    target_existed = target.exists()
     created_parent = False
+    backup: Path | None = None
     try:
         _log(result, MigrationEvent("start", str(source), str(target), "안전 복제 시작"), progress)
+        if target_existed:
+            shutil.copytree(target, staging, dirs_exist_ok=True, symlinks=True)
+            _log(result, MigrationEvent("preserve", str(target), str(staging), "기존 대상 내용 보존"), progress)
         destinations: set[str] = set()
         copied: list[Path] = []
         included_directories: list[Path] = []
@@ -437,7 +577,7 @@ def migrate_iar_project(
             renamed_relative = _renamed_relative(relative, options)
             destination = staging / renamed_relative
             collision_key = str(destination).casefold()
-            if collision_key in destinations or destination.exists():
+            if collision_key in destinations or destination.exists() or destination.is_symlink():
                 raise MigrationError(f"이름 변경 후 파일 경로가 충돌합니다: {renamed_relative}")
             destinations.add(collision_key)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -467,12 +607,25 @@ def migrate_iar_project(
             _modify_text_file(destination, options, result, progress)
 
         _cancelled(cancelled)
-        if target_was_empty:
-            target.rmdir()
         if not target.parent.exists():
             target.parent.mkdir(parents=True, exist_ok=False)
             created_parent = True
-        staging.replace(target)
+        if target_existed:
+            backup = target.with_name(f".{target.name}.iar-backup-{uuid.uuid4().hex[:10]}")
+            target.replace(backup)
+        try:
+            staging.replace(target)
+        except BaseException:
+            if backup is not None and backup.exists() and not target.exists():
+                backup.replace(target)
+            raise
+        if backup is not None and backup.exists():
+            try:
+                shutil.rmtree(backup)
+            except OSError as error:
+                warning = f"이전 대상 백업 폴더를 자동 삭제하지 못했습니다: {backup} ({error})"
+                result.warnings.append(warning)
+                _log(result, MigrationEvent("warning", str(backup), detail=warning), progress)
         _log(result, MigrationEvent("complete", str(source), str(target), "복제 및 마이그레이션 완료"), progress)
         return result
     except BaseException:
@@ -486,8 +639,6 @@ def migrate_iar_project(
                 except OSError:
                     break
                 current = current.parent
-        if target_was_empty and not target.exists():
-            target.mkdir(parents=True, exist_ok=True)
         raise
 
 
@@ -496,6 +647,7 @@ def format_event(event: MigrationEvent) -> str:
         "start": "시작", "preview": "사전 검사", "copy": "복사", "rename_copy": "이름 변경·복사",
         "modify": "내부 치환", "would_modify": "내부 치환 예정", "skip_dir": "폴더 제외", "skip_file": "파일 제외",
         "warning": "경고", "complete": "완료", "preview_complete": "사전 검사 완료",
+        "preserve": "기존 대상 보존",
     }
     label = labels.get(event.action, event.action)
     route = event.source

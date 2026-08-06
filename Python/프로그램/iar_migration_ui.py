@@ -6,15 +6,14 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
+    QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from iar_project_migrator import (
-    MigrationCancelled, MigrationError, MigrationEvent, MigrationOptions, MigrationResult,
+    IarWorkspaceInfo, MigrationCancelled, MigrationError, MigrationEvent, MigrationOptions, MigrationResult,
     format_event, inspect_iar_workspace, migrate_iar_project, preview_iar_migration,
-    suggested_embedded_path,
 )
 from window_state import apply_dark_title_bar, restore_window_state, save_window_state
 
@@ -64,6 +63,7 @@ class IarProjectMigrationDialog(QDialog):
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self.last_result: MigrationResult | None = None
+        self.workspace_info: IarWorkspaceInfo | None = None
         self.setWindowTitle("IAR 프로젝트 복제 및 이름 변경")
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.setSizeGripEnabled(True)
@@ -109,56 +109,24 @@ class IarProjectMigrationDialog(QDialog):
         form_layout.setHorizontalSpacing(14)
         self.workspace_edit = self._path_row(form_layout, "기존 IAR 워크스페이스(.eww)", self._browse_workspace)
         self.workspace_edit.setPlaceholderText(".eww를 선택하면 기존 프로젝트 정보가 자동 입력됩니다.")
-        self.source_edit = self._path_row(form_layout, "복제할 기존 프로젝트 루트", self._browse_source)
-        old_folders = QHBoxLayout()
-        self.old_first_folder = QLineEdit()
-        self.old_first_folder.setPlaceholderText("기존 1차(메인) 폴더")
-        self.old_second_folder = QLineEdit()
-        self.old_second_folder.setPlaceholderText("기존 2차(프로젝트) 폴더")
-        old_folders.addWidget(self.old_first_folder)
-        old_folders.addWidget(self.old_second_folder)
-        form_layout.addRow("자동 감지된 기존 2단 폴더", old_folders)
-
-        self.target_base_edit = self._path_row(form_layout, "새 프로젝트 저장 기준 폴더", self._browse_target_base)
-        new_folders = QHBoxLayout()
-        self.new_first_folder = QLineEdit()
-        self.new_first_folder.setPlaceholderText("새 1차(메인) 폴더")
-        self.new_second_folder = QLineEdit()
-        self.new_second_folder.setPlaceholderText("새 2차(프로젝트) 폴더")
-        new_folders.addWidget(self.new_first_folder)
-        new_folders.addWidget(self.new_second_folder)
-        form_layout.addRow("새로 만들 2단 폴더", new_folders)
-        self.target_edit = QLineEdit()
-        self.target_edit.setReadOnly(True)
-        self.target_edit.setPlaceholderText("저장 기준 폴더 + 새 1차 폴더 + 새 2차 폴더")
-        form_layout.addRow("최종 생성 경로", self.target_edit)
-        self.old_name = QLineEdit()
-        self.old_name.setPlaceholderText("예: PCB031_48_ESS_UPS_V1.2")
-        form_layout.addRow("기존 프로젝트 핵심 이름", self.old_name)
+        self.new_first_path_edit = self._path_row(form_layout, "새 1차 폴더 경로", self._browse_new_first_path)
+        self.new_first_path_edit.setPlaceholderText("선택한 폴더 자체가 새 프로젝트의 1차 폴더입니다.")
         self.new_name = QLineEdit()
-        self.new_name.setPlaceholderText("예: 303-J-00-X-01")
-        form_layout.addRow("새 프로젝트 핵심 이름", self.new_name)
-        self.old_path = QLineEdit()
-        self.old_path.setPlaceholderText("예: Susan-Heavy-duty-lift-48V\\48V_HDL")
-        form_layout.addRow("파일 내부의 기존 폴더 경로", self.old_path)
-        self.new_path = QLineEdit()
-        self.new_path.setPlaceholderText("예: 303-J-00-X-01\\TEST_BD")
-        form_layout.addRow("파일 내부의 새 폴더 경로", self.new_path)
-        for edit in (self.target_base_edit, self.new_first_folder, self.new_second_folder):
-            edit.textChanged.connect(self._update_derived_paths)
-        self.new_first_folder.textChanged.connect(self._suggest_new_keyword)
-        for edit in (self.old_first_folder, self.old_second_folder):
-            edit.textChanged.connect(self._update_old_embedded_path)
-        option_row = QHBoxLayout()
-        self.source_text_check = QCheckBox("C/C++ 및 관련 텍스트 파일 내부도 함께 치환")
-        self.source_text_check.setChecked(True)
-        self.source_text_check.setToolTip("IAR 설정 파일뿐 아니라 .c/.h/.icf 등에서 프로젝트명과 경로를 함께 바꿉니다.")
-        option_row.addWidget(self.source_text_check)
-        self.rename_dir_check = QCheckBox("기존 프로젝트명이 포함된 하위 폴더명 변경")
-        self.rename_dir_check.setChecked(True)
-        option_row.addWidget(self.rename_dir_check)
-        option_row.addStretch(1)
-        form_layout.addRow("추가 범위", option_row)
+        self.new_name.setPlaceholderText("워크스페이스 분석 후 기존 이름이 자동 입력됩니다.")
+        form_layout.addRow("새 프로젝트 이름", self.new_name)
+        self.new_second_folder_edit = QLineEdit()
+        self.new_second_folder_edit.setPlaceholderText("워크스페이스 분석 후 기존 2차 폴더명이 자동 입력됩니다.")
+        form_layout.addRow("새 2차 폴더명", self.new_second_folder_edit)
+        self.detected_summary = QLabel("기존 .eww 파일을 선택하면 원본 경로와 프로젝트 정보를 자동 분석합니다.")
+        self.detected_summary.setWordWrap(True)
+        self.detected_summary.setObjectName("subtitle")
+        form_layout.addRow("자동 감지 정보", self.detected_summary)
+        self.final_path_label = QLabel("-")
+        self.final_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form_layout.addRow("최종 생성 경로", self.final_path_label)
+        self.workspace_edit.textChanged.connect(self._workspace_path_edited)
+        for edit in (self.new_first_path_edit, self.new_name, self.new_second_folder_edit):
+            edit.textChanged.connect(self._update_action_state)
         layout.addWidget(form_frame)
 
         command_row = QHBoxLayout()
@@ -252,97 +220,120 @@ class IarProjectMigrationDialog(QDialog):
         layout.addRow(label, row)
         return edit
 
-    def _browse_source(self) -> None:
-        start = self.source_edit.text().strip() or str(Path.home())
-        selected = QFileDialog.getExistingDirectory(self, "기존 IAR 프로젝트 폴더", start)
-        if not selected:
-            return
-        self._apply_source_root(Path(selected))
-
     def _browse_workspace(self) -> None:
-        start = self.workspace_edit.text().strip() or self.source_edit.text().strip() or str(Path.home())
+        start = self.workspace_edit.text().strip() or str(Path.home())
         selected, _ = QFileDialog.getOpenFileName(
             self, "기존 IAR 워크스페이스 열기", start, "IAR Workspace (*.eww)"
         )
         if not selected:
             return
+        self._load_workspace(selected, notify=True)
+
+    def _load_workspace(self, selected: str, notify: bool = True) -> bool:
         try:
             info = inspect_iar_workspace(selected)
         except Exception as error:  # noqa: BLE001 - validation is shown to the user
-            QMessageBox.warning(self, "IAR 워크스페이스 확인", str(error))
-            return
-        previous_old_keyword = self.old_name.text()
+            self.workspace_info = None
+            self._update_action_state()
+            if notify:
+                QMessageBox.warning(self, "IAR 워크스페이스 확인", str(error))
+            return False
+        self.workspace_info = info
         self.workspace_edit.setText(info.workspace_file)
-        self.source_edit.setText(info.source_root)
-        self.old_first_folder.setText(info.first_folder)
-        self.old_second_folder.setText(info.second_folder)
-        self.old_name.setText(info.project_keyword)
-        if not self.new_name.text().strip() or self.new_name.text() == previous_old_keyword:
-            self.new_name.setText(self.new_first_folder.text().strip())
-        self.old_path.setText(f"{info.first_folder}\\{info.second_folder}")
+        old_first_path = Path(info.source_root).parent
+        self.new_first_path_edit.setText(str(old_first_path))
+        self.new_name.setText(info.project_keyword)
+        self.new_second_folder_edit.setText(info.second_folder)
         project_count = len(info.referenced_projects)
-        self.status.setText(
-            f"워크스페이스 자동 인식 완료 · {info.encoding} · 참조 프로젝트 {project_count}개"
+        cubemx_count = len(list(Path(info.source_root).rglob("*.ioc")))
+        self.detected_summary.setText(
+            f"원본 1차 폴더: {old_first_path}\n"
+            f"원본 2차 폴더: {info.second_folder} · 프로젝트: {info.project_keyword} · "
+            f"IAR 참조 {project_count}개 · CubeMX .ioc {cubemx_count}개 · {info.encoding}"
         )
+        self.status.setText(
+            "워크스페이스 자동 인식 완료 · 새 1차 폴더 경로를 다른 위치로 지정하십시오."
+        )
+        self._update_action_state()
+        return True
 
-    def _apply_source_root(self, selected: Path) -> None:
-        self.source_edit.setText(str(selected))
-        self.old_first_folder.setText(selected.parent.name)
-        self.old_second_folder.setText(selected.name)
-        self.old_path.setText(suggested_embedded_path(selected))
+    def _workspace_path_edited(self) -> None:
+        if self.workspace_info and Path(self.workspace_edit.text().strip()) != Path(self.workspace_info.workspace_file):
+            self.workspace_info = None
+            self.detected_summary.setText("변경된 .eww 경로를 찾아보기로 다시 선택하십시오.")
+        self._update_action_state()
 
-    def _browse_target_base(self) -> None:
-        current = self.target_base_edit.text().strip()
-        start = current or str(Path.home())
-        selected = QFileDialog.getExistingDirectory(self, "새 프로젝트 저장 기준 폴더", start)
-        if selected:
-            self.target_base_edit.setText(selected)
-
-    def _update_old_embedded_path(self) -> None:
-        parts = [self.old_first_folder.text().strip(), self.old_second_folder.text().strip()]
-        if all(parts):
-            self.old_path.setText("\\".join(parts))
-
-    def _update_derived_paths(self) -> None:
-        base = self.target_base_edit.text().strip()
-        first = self.new_first_folder.text().strip()
-        second = self.new_second_folder.text().strip()
-        if base and first and second:
-            self.target_edit.setText(str(Path(base) / first / second))
-            self.new_path.setText(f"{first}\\{second}")
+    def _browse_new_first_path(self) -> None:
+        current = self.new_first_path_edit.text().strip()
+        if current:
+            start = current
+        elif self.workspace_info:
+            start = str(Path(self.workspace_info.source_root).parent)
         else:
-            self.target_edit.clear()
-
-    def _suggest_new_keyword(self, value: str) -> None:
-        if not self.new_name.text().strip():
-            self.new_name.setText(value.strip())
+            start = str(Path.home())
+        selected = QFileDialog.getExistingDirectory(
+            self, "새 프로젝트 1차 폴더 선택 (선택 폴더 자체가 1차 폴더)", start
+        )
+        if selected:
+            self.new_first_path_edit.setText(selected)
 
     def _options(self) -> MigrationOptions:
+        if self.workspace_info is None:
+            raise MigrationError("기존 IAR 워크스페이스(.eww)를 먼저 선택하십시오.")
         invalid = set('<>:"/\\|?*')
         reserved = {"CON", "PRN", "AUX", "NUL"} | {
             f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
         }
-        for label, value in (
-            ("새 1차 폴더", self.new_first_folder.text().strip()),
-            ("새 2차 폴더", self.new_second_folder.text().strip()),
-        ):
+        for label, value in (("새 2차 폴더", self.new_second_folder_edit.text().strip()),):
             if not value or value in {".", ".."} or any(character in invalid for character in value):
                 raise MigrationError(f"{label} 이름이 올바르지 않습니다: {value or '(비어 있음)'}")
             if value.rstrip(". ").upper() in reserved or value != value.rstrip(". "):
                 raise MigrationError(f"Windows에서 사용할 수 없는 {label} 이름입니다: {value}")
-        keyword = self.new_name.text()
-        if any(character in invalid for character in keyword):
+        keyword = self.new_name.text().strip()
+        if not keyword or any(character in invalid for character in keyword):
             raise MigrationError("새 프로젝트 핵심 이름에 파일명으로 사용할 수 없는 문자가 포함되어 있습니다.")
+        first_path_text = self.new_first_path_edit.text().strip()
+        if not first_path_text:
+            raise MigrationError("새 1차 폴더 경로를 지정하십시오.")
+        first_path = Path(first_path_text).expanduser().resolve(strict=False)
+        old_first_path = Path(self.workspace_info.source_root).parent.resolve(strict=False)
+        if str(first_path).casefold() == str(old_first_path).casefold():
+            raise MigrationError("원본 보존을 위해 새 1차 폴더 경로는 기존 1차 폴더와 달라야 합니다.")
+        second = self.new_second_folder_edit.text().strip()
+        target_root = first_path / second
         return MigrationOptions(
-            source_root=self.source_edit.text().strip(),
-            target_root=self.target_edit.text().strip(),
-            old_keyword=self.old_name.text(),
-            new_keyword=self.new_name.text(),
-            old_embedded_path=self.old_path.text().strip(),
-            new_embedded_path=self.new_path.text().strip(),
-            replace_source_text=self.source_text_check.isChecked(),
-            rename_directories=self.rename_dir_check.isChecked(),
+            source_root=self.workspace_info.source_root,
+            target_root=str(target_root),
+            old_keyword=self.workspace_info.project_keyword,
+            new_keyword=keyword,
+            old_embedded_path=f"{self.workspace_info.first_folder}\\{self.workspace_info.second_folder}",
+            new_embedded_path=f"{first_path.name}\\{second}",
+            replace_source_text=True,
+            rename_directories=True,
         )
+
+    def _update_action_state(self) -> None:
+        target_text = "-"
+        valid = False
+        reason = "기존 IAR 워크스페이스(.eww)를 선택하십시오."
+        if self.workspace_info is not None:
+            first_text = self.new_first_path_edit.text().strip()
+            second = self.new_second_folder_edit.text().strip()
+            if first_text and second:
+                target_text = str(Path(first_text).expanduser() / second)
+            try:
+                self._options()
+            except (MigrationError, OSError) as error:
+                reason = str(error)
+            else:
+                valid = True
+                reason = "복제 준비 완료 · 사전 검사 후 안전 복제를 시작하십시오."
+        self.final_path_label.setText(target_text)
+        if self.worker is None:
+            self.preview_button.setEnabled(valid)
+            self.run_button.setEnabled(valid)
+            if not self.last_result:
+                self.status.setText(reason)
 
     def _start(self, preview: bool) -> None:
         if self.worker is not None:
@@ -356,7 +347,9 @@ class IarProjectMigrationDialog(QDialog):
             answer = QMessageBox.question(
                 self, "IAR 프로젝트 안전 복제",
                 "사전 검사를 마쳤다면 복제를 시작합니다.\n\n"
-                "원본은 변경하지 않으며, 대상 폴더가 비어 있지 않으면 자동으로 중단합니다.\n"
+                "원본은 변경하지 않습니다. 대상 폴더가 이미 있으면 기존 파일을 보존하고,\n"
+                "같은 상대 경로의 파일이 있을 때는 덮어쓰지 않고 작업을 중단합니다.\n"
+                "CubeMX .ioc는 프로젝트 식별 항목만 변경하고 하드웨어 설정을 검증합니다.\n"
                 "계속하시겠습니까?",
             )
             if answer != QMessageBox.Yes:
@@ -419,10 +412,12 @@ class IarProjectMigrationDialog(QDialog):
     def _finished(self) -> None:
         self.worker = None
         self._set_running(False, self.status.text())
+        self._update_action_state()
 
     def _set_running(self, running: bool, text: str) -> None:
-        self.preview_button.setEnabled(not running)
-        self.run_button.setEnabled(not running)
+        if running:
+            self.preview_button.setEnabled(False)
+            self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(running)
         self.progress.setRange(0, 0 if running else 1)
         self.progress.setValue(0)
@@ -434,49 +429,34 @@ class IarProjectMigrationDialog(QDialog):
             self.worker.cancel()
 
     def _open_target(self) -> None:
-        path = self.last_result.target_root if self.last_result else self.target_edit.text().strip()
+        path = self.last_result.target_root if self.last_result else self.final_path_label.text().strip()
         if path and Path(path).is_dir():
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _restore_fields(self) -> None:
-        for widget, key in (
-            (self.workspace_edit, "workspaceFile"), (self.source_edit, "sourceRoot"),
-            (self.target_base_edit, "targetBase"),
-            (self.old_first_folder, "oldFirstFolder"), (self.old_second_folder, "oldSecondFolder"),
-            (self.new_first_folder, "newFirstFolder"), (self.new_second_folder, "newSecondFolder"),
-            (self.old_name, "oldKeyword"), (self.new_name, "newKeyword"),
-            (self.old_path, "oldEmbeddedPath"), (self.new_path, "newEmbeddedPath"),
-        ):
-            widget.setText(str(self.settings.value(f"iarMigration/{key}", "") or ""))
-        # Migrate the pre-1.4 target field into the new two-level destination model.
-        if not self.target_base_edit.text().strip():
-            legacy = str(self.settings.value("iarMigration/targetRoot", "") or "")
-            if legacy:
-                legacy_path = Path(legacy)
-                self.target_base_edit.setText(str(legacy_path.parent.parent))
-                self.new_first_folder.setText(legacy_path.parent.name)
-                self.new_second_folder.setText(legacy_path.name)
-        self.source_text_check.setChecked(
-            str(self.settings.value("iarMigration/replaceSourceText", "true")).lower() != "false"
-        )
-        self.rename_dir_check.setChecked(
-            str(self.settings.value("iarMigration/renameDirectories", "true")).lower() != "false"
-        )
-        self._update_derived_paths()
+        workspace = str(self.settings.value("iarMigration/workspaceFile", "") or "")
+        saved_first = str(self.settings.value("iarMigration/newFirstPath", "") or "")
+        saved_name = str(self.settings.value("iarMigration/newKeyword", "") or "")
+        saved_second = str(self.settings.value("iarMigration/newSecondFolder", "") or "")
+        if workspace and Path(workspace).is_file() and self._load_workspace(workspace, notify=False):
+            if saved_first:
+                self.new_first_path_edit.setText(saved_first)
+            if saved_name:
+                self.new_name.setText(saved_name)
+            if saved_second:
+                self.new_second_folder_edit.setText(saved_second)
+        elif workspace:
+            self.workspace_edit.setText(workspace)
+        self._update_action_state()
 
     def _save_fields(self) -> None:
         for widget, key in (
-            (self.workspace_edit, "workspaceFile"), (self.source_edit, "sourceRoot"),
-            (self.target_base_edit, "targetBase"),
-            (self.old_first_folder, "oldFirstFolder"), (self.old_second_folder, "oldSecondFolder"),
-            (self.new_first_folder, "newFirstFolder"), (self.new_second_folder, "newSecondFolder"),
-            (self.old_name, "oldKeyword"), (self.new_name, "newKeyword"),
-            (self.old_path, "oldEmbeddedPath"), (self.new_path, "newEmbeddedPath"),
+            (self.workspace_edit, "workspaceFile"),
+            (self.new_first_path_edit, "newFirstPath"),
+            (self.new_name, "newKeyword"),
+            (self.new_second_folder_edit, "newSecondFolder"),
         ):
             self.settings.setValue(f"iarMigration/{key}", widget.text().strip())
-        self.settings.setValue("iarMigration/targetRoot", self.target_edit.text().strip())
-        self.settings.setValue("iarMigration/replaceSourceText", self.source_text_check.isChecked())
-        self.settings.setValue("iarMigration/renameDirectories", self.rename_dir_check.isChecked())
         self.settings.sync()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802

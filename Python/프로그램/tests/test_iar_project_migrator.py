@@ -4,7 +4,7 @@ from pathlib import Path
 
 from iar_project_migrator import (
     MigrationError, MigrationOptions, inspect_iar_workspace, migrate_iar_project,
-    preview_iar_migration, synchronize_ewp_project_name,
+    preview_iar_migration, synchronize_cubemx_ioc, synchronize_ewp_project_name,
 )
 
 
@@ -31,6 +31,17 @@ class IarProjectMigratorTests(unittest.TestCase):
             (ewarm / "OLD_BOARD.eww").write_text(
                 "OLD_BOARD\nLegacyProduct/OLD_BOARD/EWARM\n", encoding="utf-8",
             )
+            (source / "OLD_BOARD_ClassB.ioc").write_text(
+                "#MicroXplorer Configuration settings - do not modify\n"
+                "Mcu.Name=STM32F103VCTx\n"
+                "RCC.HSE_VALUE=8000000\n"
+                "ProjectManager.ProjectFileName=OLD_BOARD_ClassB.ioc\n"
+                "ProjectManager.ProjectName=OLD_BOARD_ClassB\n",
+                encoding="utf-8",
+            )
+            (source / ".mxproject").write_text(
+                "[PreviousGenFiles]\nSourcePath#0=..\\Core\\Src\n", encoding="utf-8"
+            )
             (source / "Src").mkdir()
             original_source = "// 한글\nconst char *project = \"OLD_BOARD\";\n"
             (source / "Src" / "main.c").write_bytes(original_source.encode("cp949"))
@@ -45,18 +56,27 @@ class IarProjectMigratorTests(unittest.TestCase):
 
             project = target / "NEW-BOARD" / "EWARM" / "NEW-BOARD_ClassB.ewp"
             workspace = target / "NEW-BOARD" / "EWARM" / "NEW-BOARD.eww"
+            ioc = target / "NEW-BOARD_ClassB.ioc"
             self.assertTrue(project.is_file())
             self.assertTrue(workspace.is_file())
             project_text = project.read_text(encoding="utf-8")
             self.assertIn("<name>NEW-BOARD_ClassB</name>", project_text)
             self.assertIn(r"NewProduct\NEW-BOARD\Src", project_text)
             self.assertIn("NewProduct/NEW-BOARD/EWARM", workspace.read_text(encoding="utf-8"))
+            ioc_text = ioc.read_text(encoding="utf-8")
+            self.assertIn("ProjectManager.ProjectFileName=NEW-BOARD_ClassB.ioc", ioc_text)
+            self.assertIn("ProjectManager.ProjectName=NEW-BOARD_ClassB", ioc_text)
+            self.assertIn("RCC.HSE_VALUE=8000000", ioc_text)
+            self.assertEqual(
+                (target / ".mxproject").read_text(encoding="utf-8"),
+                "[PreviousGenFiles]\nSourcePath#0=..\\Core\\Src\n",
+            )
             self.assertIn("NEW-BOARD", (target / "Src" / "main.c").read_bytes().decode("cp949"))
             for ignored in ("Debug", "Release", ".iar", "settings", "build.dep", "database.pbd"):
                 self.assertFalse((target / ignored).exists())
             self.assertEqual((source / "Src" / "main.c").read_bytes().decode("cp949"), original_source)
-            self.assertEqual(result.renamed_files, 2)
-            self.assertEqual(result.modified_files, 3)
+            self.assertEqual(result.renamed_files, 3)
+            self.assertEqual(result.modified_files, 4)
             self.assertEqual(result.project_names_updated, 1)
 
     def test_preview_does_not_create_target(self) -> None:
@@ -72,18 +92,33 @@ class IarProjectMigratorTests(unittest.TestCase):
             self.assertEqual(result.modified_files, 1)
             self.assertFalse(target.exists())
 
-    def test_non_empty_target_is_never_overwritten(self) -> None:
+    def test_non_empty_target_is_preserved_when_paths_do_not_collide(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"
             target = root / "target"
             source.mkdir()
             target.mkdir()
+            (source / "main.c").write_text("OLD_BOARD", encoding="utf-8")
             protected = target / "keep.txt"
             protected.write_text("do not change", encoding="utf-8")
-            with self.assertRaisesRegex(MigrationError, "비어 있지 않습니다"):
-                migrate_iar_project(options(source, target))
+            migrate_iar_project(options(source, target))
             self.assertEqual(protected.read_text(encoding="utf-8"), "do not change")
+            self.assertEqual((target / "main.c").read_text(encoding="utf-8"), "NEW-BOARD")
+
+    def test_existing_target_collision_never_overwrites_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            target = root / "target"
+            source.mkdir()
+            target.mkdir()
+            (source / "OLD_BOARD.ewp").write_text("OLD_BOARD", encoding="utf-8")
+            protected = target / "NEW-BOARD.ewp"
+            protected.write_text("keep", encoding="utf-8")
+            with self.assertRaisesRegex(MigrationError, "충돌"):
+                migrate_iar_project(options(source, target))
+            self.assertEqual(protected.read_text(encoding="utf-8"), "keep")
 
     def test_rename_collision_leaves_no_partial_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -142,6 +177,47 @@ class IarProjectMigratorTests(unittest.TestCase):
             self.assertEqual(info.second_folder, "Firmware")
             self.assertEqual(info.project_keyword, "PCB031_48_ESS_UPS_V1.2")
             self.assertEqual(len(info.referenced_projects), 1)
+
+    def test_generic_project_workspace_detects_keyword_from_iar_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "Susan-Heavy-duty-lift-48V" / "48V_HDL"
+            ewarm = root / "EWARM"
+            ewarm.mkdir(parents=True)
+            workspace = ewarm / "Project.eww"
+            workspace.write_text(
+                '<workspace><project><path>$WS_DIR$\\PCB031_48_ESS_UPS_V1.2_ClassB.ewp</path></project></workspace>',
+                encoding="utf-8",
+            )
+            (ewarm / "PCB031_48_ESS_UPS_V1.2_ClassB.ewp").write_text("<project />", encoding="utf-8")
+            (ewarm / "PCB031_48_ESS_UPS_V1.2.ewt").write_text("template", encoding="utf-8")
+            info = inspect_iar_workspace(workspace)
+            self.assertEqual(info.project_keyword, "PCB031_48_ESS_UPS_V1.2")
+
+    def test_cubemx_ioc_changes_only_project_manager_identity(self) -> None:
+        source = (
+            "Mcu.Name=OLD_BOARD\n"
+            "PA0.Signal=ADC1_IN0\n"
+            "ProjectManager.ProjectFileName=OLD_BOARD.ioc\n"
+            "ProjectManager.ProjectName=OLD_BOARD\n"
+            "ProjectManager.functionlistsort=OLD_BOARD-runtime-label\n"
+        )
+        updated, count = synchronize_cubemx_ioc(source, options(Path("source"), Path("target")))
+        self.assertEqual(count, 2)
+        self.assertIn("Mcu.Name=OLD_BOARD", updated)
+        self.assertIn("PA0.Signal=ADC1_IN0", updated)
+        self.assertIn("ProjectManager.ProjectFileName=NEW-BOARD.ioc", updated)
+        self.assertIn("ProjectManager.functionlistsort=OLD_BOARD-runtime-label", updated)
+
+    def test_same_project_name_is_allowed_when_only_location_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "old" / "Firmware"
+            source.mkdir(parents=True)
+            (source / "main.c").write_text("OLD_BOARD", encoding="utf-8")
+            target = root / "new" / "Firmware"
+            same_name = MigrationOptions(str(source), str(target), "OLD_BOARD", "OLD_BOARD")
+            migrate_iar_project(same_name)
+            self.assertTrue((target / "main.c").is_file())
 
 
 if __name__ == "__main__":
