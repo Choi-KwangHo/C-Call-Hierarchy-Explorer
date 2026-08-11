@@ -16,7 +16,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QFont,
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTextEdit,
-    QFrame, QHBoxLayout, QSplitter, QStackedWidget, QStyle, QToolBar,
+    QFrame, QHBoxLayout, QSplitter, QStackedWidget, QStyle, QTabWidget, QToolBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -26,6 +26,7 @@ from settings_dialog import ProjectSettingsDialog, normalize_exclusions
 from trace_ui import TraceCenterDialog
 from eeprom_map import load_source_configs, save_source_configs
 from eeprom_ui import CDeclarationHighlighter, EepromMapDialog
+from iar_map_ui import IarMapAnalyzerWidget
 from iar_migration_ui import IarProjectMigrationDialog
 from iar_debug_settings_ui import IarDebugSettingsDialog
 from theme import apply_application_dark_theme
@@ -39,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.5.0"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -392,6 +393,10 @@ class MainWindow(QMainWindow):
         self._startup_update_checked = False
         self.trace_center: TraceCenterDialog | None = None
         self.eeprom_view: EepromMapDialog | None = None
+        self.iar_map_view: IarMapAnalyzerWidget | None = None
+        self.analysis_tabs: QTabWidget | None = None
+        self._trace_tab_index = -1
+        self._eeprom_root = ""
         self.iar_migration_view: IarProjectMigrationDialog | None = None
         self.iar_debug_settings_view: IarDebugSettingsDialog | None = None
         self._restoring_state = True
@@ -463,6 +468,10 @@ class MainWindow(QMainWindow):
         eeprom_source_action = QAction("EEPROM 소스 설정…", self)
         eeprom_source_action.triggered.connect(lambda: self._open_project_settings(initial_page="system"))
         tools_menu.addAction(eeprom_source_action)
+        iar_map_action = QAction("IAR MAP Analyzer…", self)
+        iar_map_action.setShortcut("Ctrl+Shift+M")
+        iar_map_action.triggered.connect(self._open_iar_map)
+        tools_menu.addAction(iar_map_action)
         tools_menu.addSeparator()
         iar_debug_action = QAction("IAR 디버그 설정…", self)
         iar_debug_action.triggered.connect(self._open_iar_debug_settings)
@@ -587,9 +596,23 @@ class MainWindow(QMainWindow):
         self.start_page = RecentStartPage()
         self.start_page.openRequested.connect(self._choose_folder)
         self.start_page.recentRequested.connect(self._open_recent_folder)
+        self.iar_map_view = IarMapAnalyzerWidget(self)
+        self.analysis_tabs = QTabWidget(self)
+        self.analysis_tabs.setDocumentMode(True)
+        self.analysis_tabs.addTab(self.workspace_splitter, "함수 트리")
+        self.eeprom_view = EepromMapDialog(self.settings, "", self, start_analysis=False)
+        self.eeprom_view.setWindowFlags(Qt.Widget)
+        self.analysis_tabs.addTab(self.eeprom_view, "EEPROM 메모리 맵")
+        self.analysis_tabs.addTab(self.iar_map_view, "IAR MAP Analyzer")
+        # Existing Trace UI is kept functionally intact and embedded as a tab.
+        # It is created after the first C analysis because it needs AnalysisResult.
+        self._trace_placeholder = QWidget(self)
+        placeholder_layout = QVBoxLayout(self._trace_placeholder)
+        placeholder_layout.addWidget(QLabel("C 소스 폴더를 열면 Trace 센터가 준비됩니다."))
+        self._trace_tab_index = self.analysis_tabs.addTab(self._trace_placeholder, "Trace")
         self.pages = QStackedWidget()
         self.pages.addWidget(self.start_page)
-        self.pages.addWidget(self.workspace_splitter)
+        self.pages.addWidget(self.analysis_tabs)
         self.setCentralWidget(self.pages)
         self.file_action.toggled.connect(self._set_file_panel_visible)
         self.source_action.toggled.connect(self._set_code_panel_visible)
@@ -734,7 +757,7 @@ class MainWindow(QMainWindow):
                     f"사용자 설정은 저장했지만 배포 기본값 파일을 기록하지 못했습니다.\n\n{error}",
                 )
             if self.eeprom_view is not None:
-                self.eeprom_view.reload_configs(dialog.selected_eeprom_config_id())
+                self.eeprom_view.reload_configs(dialog.selected_eeprom_config_id(), start_analysis=False)
         if not folders_changed and not external_changed and not macro_changed:
             if eeprom_changed:
                 self.status_label.setText("적용 시스템 범위와 EEPROM 동기화 설정을 저장했습니다.")
@@ -766,7 +789,7 @@ class MainWindow(QMainWindow):
             self._save_cache_now()
         self._cache_dirty = False
         self._cache_generation = 0
-        self.pages.setCurrentWidget(self.workspace_splitter)
+        self.pages.setCurrentWidget(self.analysis_tabs)
         self.toolbar.show()
         excluded_folders = self._load_excluded_folders(folder)
         show_external_functions = self._load_show_external_functions(folder)
@@ -913,7 +936,7 @@ class MainWindow(QMainWindow):
         self.show_external_functions = show_external_functions
         self.exclude_macro_functions = exclude_macro_functions
         self._remember_folder(result.root)
-        self.pages.setCurrentWidget(self.workspace_splitter)
+        self.pages.setCurrentWidget(self.analysis_tabs)
         self.toolbar.show()
         self._apply_result(result, view, False)
         if from_cache:
@@ -956,21 +979,39 @@ class MainWindow(QMainWindow):
             self._mark_cache_dirty()
         if self.trace_center is not None:
             self.trace_center.refresh(result)
+        if self.eeprom_view is not None:
+            if self._eeprom_root.casefold() != result.root.casefold():
+                self._eeprom_root = result.root
+                self.eeprom_view.current_root = result.root
+                self.eeprom_view.reload_configs(start_analysis=False)
+        if self.iar_map_view is not None:
+            self.iar_map_view.set_root(result.root)
+        self._ensure_trace_tab(result)
+
+    def _ensure_trace_tab(self, result: AnalysisResult) -> None:
+        if self.analysis_tabs is None:
+            return
+        if self.trace_center is None:
+            self.trace_center = TraceCenterDialog(result, self)
+            self.trace_center.setWindowFlags(Qt.Widget)
+            self.trace_center.functionActivated.connect(self._activate_runtime_function)
+            self.trace_center.sourcesChanged.connect(lambda: self._check_updates(False))
+            for button in self.trace_center.findChildren(QPushButton):
+                if button.text().strip() in {"닫기", "Close"}:
+                    button.hide()
+            self.analysis_tabs.removeTab(self._trace_tab_index)
+            self._trace_placeholder.deleteLater()
+            self._trace_tab_index = self.analysis_tabs.addTab(self.trace_center, "Trace")
+        else:
+            self.trace_center.refresh(result)
 
     def _open_trace_center(self) -> None:
         if not self.result:
             QMessageBox.information(self, "Trace 센터", "먼저 분석할 C 소스 폴더를 여십시오.")
             return
-        if self.trace_center is None:
-            self.trace_center = TraceCenterDialog(self.result, self)
-            self.trace_center.functionActivated.connect(self._activate_runtime_function)
-            self.trace_center.sourcesChanged.connect(lambda: self._check_updates(False))
-            self.trace_center.finished.connect(self._trace_center_closed)
-        else:
-            self.trace_center.refresh(self.result)
-        self.trace_center.show()
-        self.trace_center.raise_()
-        self.trace_center.activateWindow()
+        self._ensure_trace_tab(self.result)
+        if self.analysis_tabs is not None:
+            self.analysis_tabs.setCurrentIndex(self._trace_tab_index)
 
     def _trace_center_closed(self) -> None:
         if self.trace_center is not None:
@@ -981,16 +1022,24 @@ class MainWindow(QMainWindow):
         self._open_project_settings(initial_page="system")
 
     def _open_eeprom_map(self) -> None:
-        current_root = self.session.root or ""
         if self.eeprom_view is None:
-            self.eeprom_view = EepromMapDialog(self.settings, current_root, self)
-            self.eeprom_view.finished.connect(self._eeprom_view_closed)
-            self.eeprom_view.settingsRequested.connect(
-                lambda: self._open_project_settings(initial_page="system")
-            )
-        self.eeprom_view.show()
-        self.eeprom_view.raise_()
-        self.eeprom_view.activateWindow()
+            return
+        self.eeprom_view.settingsRequested.connect(
+            lambda: self._open_project_settings(initial_page="system")
+        )
+        if self.analysis_tabs is not None:
+            self.analysis_tabs.setCurrentWidget(self.eeprom_view)
+        self.eeprom_view.refresh(False)
+
+    def _open_iar_map(self) -> None:
+        if self.iar_map_view is None:
+            return
+        if not self.result:
+            QMessageBox.information(self, "IAR MAP Analyzer", "먼저 분석할 C 소스 폴더를 여십시오.")
+            return
+        self.iar_map_view.set_root(self.result.root)
+        if self.analysis_tabs is not None:
+            self.analysis_tabs.setCurrentWidget(self.iar_map_view)
 
     def _eeprom_view_closed(self) -> None:
         if self.eeprom_view is not None:

@@ -413,7 +413,7 @@ class EepromMapDialog(QDialog):
     configsChanged = Signal()
     settingsRequested = Signal()
 
-    def __init__(self, settings: QSettings, current_root: str, parent=None) -> None:
+    def __init__(self, settings: QSettings, current_root: str, parent=None, start_analysis: bool = True) -> None:
         super().__init__(parent)
         self.settings = settings
         self.current_root = current_root
@@ -455,7 +455,8 @@ class EepromMapDialog(QDialog):
         current = self._current_config()
         if current and current.id in self.results:
             self._display(self.results[current.id])
-        QTimer.singleShot(0, lambda: self.refresh(False))
+        if start_analysis:
+            QTimer.singleShot(0, lambda: self.refresh(False))
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
@@ -729,7 +730,7 @@ class EepromMapDialog(QDialog):
     def open_settings(self) -> None:
         self.settingsRequested.emit()
 
-    def reload_configs(self, preferred_id: str = "") -> None:
+    def reload_configs(self, preferred_id: str = "", start_analysis: bool = True) -> None:
         self._cancel_active_analysis()
         self.configs = load_source_configs(self.settings, self.current_root)
         for config in self.configs:
@@ -743,7 +744,7 @@ class EepromMapDialog(QDialog):
             self._display(self.results[current.id])
         elif current:
             self._clear_result(current, f"{current.display_name}: 분석 준비 중…")
-        if current:
+        if current and start_analysis:
             self.refresh(False)
 
     def refresh(self, force: bool = False) -> None:
