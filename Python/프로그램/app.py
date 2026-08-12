@@ -40,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -602,6 +602,7 @@ class MainWindow(QMainWindow):
         self.analysis_tabs.addTab(self.workspace_splitter, "함수 트리")
         self.eeprom_view = EepromMapDialog(self.settings, "", self, start_analysis=False)
         self.eeprom_view.setWindowFlags(Qt.Widget)
+        self.eeprom_view.sourceSelected.connect(self._on_analysis_item_selected)
         self.analysis_tabs.addTab(self.eeprom_view, "EEPROM 메모리 맵")
         self.analysis_tabs.addTab(self.iar_map_view, "IAR MAP Analyzer")
         # Existing Trace UI is kept functionally intact and embedded as a tab.
@@ -1030,6 +1031,17 @@ class MainWindow(QMainWindow):
         if self.analysis_tabs is not None:
             self.analysis_tabs.setCurrentWidget(self.eeprom_view)
         self.eeprom_view.refresh(False)
+
+    def _on_analysis_item_selected(self, display_name: str, source_root: str) -> None:
+        """Use the selected EEPROM item as the shared analysis context."""
+        if not source_root or not Path(source_root).is_dir():
+            return
+        self._eeprom_root = source_root
+        if self.iar_map_view is not None:
+            self.iar_map_view.set_root(source_root)
+        if self.trace_center is not None and self.result is not None:
+            self.trace_center.setWindowTitle(f"Trace · {display_name}")
+        self.status_label.setText(f"분석 아이템 적용: {display_name} · {source_root}")
 
     def _open_iar_map(self) -> None:
         if self.iar_map_view is None:

@@ -281,7 +281,9 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
     # exact part number (Mcu.CPN), unlike a generic IAR library/ICF family.
     # The MAP may contain a generic library hint (for example STM32F103XE),
     # while the actual .ewp/.icf selects the exact STM32F103VCT6 device.
-    search_roots = [file_path.parent, *file_path.parents[:2]]
+    # MAP files are commonly under EWARM/<config>/List while CubeMX .ioc is
+    # several levels above the build directory.
+    search_roots = [file_path.parent, *file_path.parents[:8]]
     for root in search_roots:
         try:
             iocs = list(root.glob("*.ioc"))

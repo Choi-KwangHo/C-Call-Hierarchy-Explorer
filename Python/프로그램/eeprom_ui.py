@@ -412,6 +412,7 @@ class EepromSourceSettingsDialog(QDialog):
 class EepromMapDialog(QDialog):
     configsChanged = Signal()
     settingsRequested = Signal()
+    sourceSelected = Signal(str, str)  # display name, resolved analysis root
 
     def __init__(self, settings: QSettings, current_root: str, parent=None, start_analysis: bool = True) -> None:
         super().__init__(parent)
@@ -713,6 +714,7 @@ class EepromMapDialog(QDialog):
         self._reset_timer()
         if config and config.id in self.results:
             self._display(self.results[config.id])
+            self.sourceSelected.emit(config.display_name, self.results[config.id].source_root)
             self.refresh(False)
         elif config:
             self._clear_result(config, f"{config.display_name}: 분석 준비 중…")
@@ -883,6 +885,7 @@ class EepromMapDialog(QDialog):
         self.commit_card.value.setText(result.commit[:8] or "로컬")
         interval = f" · 자동 {config.refresh_minutes}분" if config.auto_refresh else " · 자동 동기화 꺼짐"
         self.subtitle.setText(f"{config.display_name} · {result.source_root} · {result.commit[:8] or '로컬'}{interval}")
+        self.sourceSelected.emit(config.display_name, result.source_root)
         self.canvas.set_result(result)
         self.region_table.setRowCount(0)
         root = Path(result.source_root)
