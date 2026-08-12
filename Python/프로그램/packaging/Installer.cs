@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -69,7 +70,7 @@ namespace CCallHierarchyExplorerSetup
     internal sealed class InstallerForm : Form
     {
         private const string AppName = "C Call Hierarchy Explorer";
-        private const string AppVersion = "1.5.0";
+        private const string AppVersion = "1.5.5";
         private const string AppId = "CCallHierarchyExplorer";
         private const string ExeName = "C Call Hierarchy Explorer.exe";
 
@@ -210,6 +211,7 @@ namespace CCallHierarchyExplorerSetup
                 File.WriteAllText(
                     Path.Combine(installRoot, "active-install.txt"),
                     Path.GetFileName(installDirectory));
+                CreateStableLauncher();
                 if (!IsTestInstall())
                 {
                     string startMenu = Path.Combine(
@@ -380,13 +382,26 @@ namespace CCallHierarchyExplorerSetup
             object shortcut = shellType.InvokeMember(
                 "CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
             Type shortcutType = shortcut.GetType();
-            shortcutType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, shortcut, new object[] { GetInstalledExe() });
-            shortcutType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, shortcut, new object[] { installDirectory });
+            shortcutType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, shortcut, new object[] { Path.Combine(Environment.SystemDirectory, "wscript.exe") });
+            shortcutType.InvokeMember("Arguments", BindingFlags.SetProperty, null, shortcut, new object[] { "//B \"" + Path.Combine(installRoot, "launch.vbs") + "\"" });
+            shortcutType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, shortcut, new object[] { installRoot });
             shortcutType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, shortcut, new object[] { GetInstalledExe() + ",0" });
             shortcutType.InvokeMember("Description", BindingFlags.SetProperty, null, shortcut, new object[] { "Analyze C function call hierarchies" });
             shortcutType.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
             Marshal.FinalReleaseComObject(shortcut);
             Marshal.FinalReleaseComObject(shell);
+        }
+
+        private void CreateStableLauncher()
+        {
+            string launcher = Path.Combine(installRoot, "launch.vbs");
+            string content = "Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n"
+                + "Set sh = CreateObject(\"WScript.Shell\")\r\n"
+                + "root = fso.GetParentFolderName(WScript.ScriptFullName)\r\n"
+                + "Set f = fso.OpenTextFile(root & \"\\active-install.txt\", 1)\r\n"
+                + "folder = Trim(f.ReadAll)\r\nf.Close\r\n"
+                + "sh.Run Chr(34) & root & \"\\\\\" & folder & \"\\\\" + ExeName + "\" & Chr(34), 1, False\r\n";
+            File.WriteAllText(launcher, content, Encoding.ASCII);
         }
 
         private void RegisterUninstaller()

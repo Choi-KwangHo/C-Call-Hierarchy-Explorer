@@ -507,7 +507,8 @@ class EepromMapDialog(QDialog):
         self.source_combo = QComboBox()
         self.source_combo.setMinimumWidth(280)
         self.source_combo.currentIndexChanged.connect(self._source_changed)
-        top.addWidget(self.source_combo)
+        # The main toolbar owns the only visible analysis-item selector.
+        self.source_combo.setVisible(False)
         refresh = QPushButton("지금 동기화")
         refresh.setObjectName("primary")
         refresh.clicked.connect(lambda: self.refresh(True))
