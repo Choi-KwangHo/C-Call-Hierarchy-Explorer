@@ -40,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -262,6 +262,7 @@ class Worker(QRunnable):
 class RecentStartPage(QWidget):
     openRequested = Signal()
     recentRequested = Signal(str)
+    analysisItemRequested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -333,6 +334,13 @@ class RecentStartPage(QWidget):
         card_layout.addWidget(card_title)
         card_layout.addSpacing(8)
         card_layout.addWidget(card_text)
+        self.item_title = QLabel("분석 아이템")
+        self.item_title.setObjectName("cardTitle")
+        card_layout.addSpacing(14)
+        card_layout.addWidget(self.item_title)
+        self.item_layout = QVBoxLayout()
+        self.item_layout.setSpacing(1)
+        card_layout.addLayout(self.item_layout)
         card_layout.addStretch(1)
 
         columns.addWidget(left, 1)
@@ -364,6 +372,22 @@ class RecentStartPage(QWidget):
             more = QLabel("나머지 항목은 파일 → 최근 폴더에서 열 수 있습니다.")
             more.setStyleSheet("color: #858585; padding: 5px 4px;")
             self.recent_layout.addWidget(more)
+
+    def set_analysis_items(self, items: list[tuple[str, str, str]]) -> None:
+        while self.item_layout.count():
+            item = self.item_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not items:
+            self.item_layout.addWidget(QLabel("등록된 분석 아이템이 없습니다."))
+            return
+        for name, source_type, source in items:
+            label = f"{name}  ·  {'GitHub' if source_type == 'github' else '로컬'}"
+            button = QPushButton(label)
+            button.setObjectName("recentLink")
+            button.setToolTip(source)
+            button.clicked.connect(lambda checked=False, selected=name: self.analysisItemRequested.emit(selected))
+            self.item_layout.addWidget(button)
 
 
 class MainWindow(QMainWindow):
@@ -603,6 +627,7 @@ class MainWindow(QMainWindow):
         self.eeprom_view = EepromMapDialog(self.settings, "", self, start_analysis=False)
         self.eeprom_view.setWindowFlags(Qt.Widget)
         self.eeprom_view.sourceSelected.connect(self._on_analysis_item_selected)
+        self.start_page.analysisItemRequested.connect(self._select_analysis_item_by_name)
         self.item_combo = QComboBox(self)
         self.item_combo.setToolTip("전체 분석 아이템")
         for item in self.eeprom_view.configs:
@@ -894,6 +919,11 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self._clear_recent)
         if hasattr(self, "start_page"):
             self.start_page.set_recent_folders(self.recent_folders)
+            if self.eeprom_view is not None:
+                self.start_page.set_analysis_items([
+                    (item.display_name, item.source_type, item.repository_url)
+                    for item in self.eeprom_view.configs
+                ])
 
     def _start_job(self, task: Callable, callback: Callable, show_progress: bool, message: str) -> bool:
         if self.busy or self._closing:
@@ -1043,15 +1073,36 @@ class MainWindow(QMainWindow):
         self.eeprom_view.refresh(False)
 
     def _on_analysis_item_selected(self, display_name: str, source_root: str) -> None:
-        """Use the selected EEPROM item as the shared analysis context."""
+        """Apply one selected repository/root to every analysis tab."""
         if not source_root or not Path(source_root).is_dir():
             return
+        if self.item_combo is not None:
+            index = self.item_combo.findText(display_name)
+            if index >= 0 and index != self.item_combo.currentIndex():
+                self.item_combo.blockSignals(True)
+                self.item_combo.setCurrentIndex(index)
+                self.item_combo.blockSignals(False)
         self._eeprom_root = source_root
         if self.iar_map_view is not None:
             self.iar_map_view.set_root(source_root)
-        if self.trace_center is not None and self.result is not None:
+        if not self.session.root or self.session.root.casefold() != source_root.casefold():
+            self.status_label.setText(f"{display_name} 전체 분석 시작: {source_root}")
+            self._open_folder(source_root)
+            return
+        if self.trace_center is not None:
             self.trace_center.setWindowTitle(f"Trace · {display_name}")
-        self.status_label.setText(f"분석 아이템 적용: {display_name} · {source_root}")
+        self.status_label.setText(f"분석 아이템 적용 완료: {display_name} · {source_root}")
+
+    def _select_analysis_item_by_name(self, display_name: str) -> None:
+        if self.eeprom_view is None:
+            return
+        config = next((item for item in self.eeprom_view.configs if item.display_name == display_name), None)
+        if config is None:
+            return
+        self.pages.setCurrentWidget(self.analysis_tabs)
+        self.toolbar.show()
+        self.analysis_tabs.setCurrentWidget(self.eeprom_view)
+        self.eeprom_view.select_source(config.id)
 
     def _open_iar_map(self) -> None:
         if self.iar_map_view is None:

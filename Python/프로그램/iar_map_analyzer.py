@@ -201,6 +201,18 @@ def _symbols(text: str, sram: MemoryRange) -> list[MapSymbol]:
     return result[:5000]
 
 
+def _validate_selected_mcu(result: MapAnalysis) -> None:
+    """Validate the final MCU after .ioc/.icf resolution has completed."""
+    expected = {"STM32F103VCT6": (256 * 1024, 48 * 1024)}.get(result.mcu_hint)
+    if not expected:
+        return
+    flash_expected, sram_expected = expected
+    if result.flash.size and result.flash.size != flash_expected:
+        result.warnings.append(f"MCU Flash capacity mismatch: expected {flash_expected:,} B, MAP {result.flash.size:,} B.")
+    if result.sram.size and result.sram.size != sram_expected:
+        result.warnings.append(f"MCU SRAM capacity mismatch: expected {sram_expected:,} B, MAP {result.sram.size:,} B.")
+
+
 def parse_map_text(text: str, path: str = "") -> MapAnalysis:
     file_path = Path(path) if path else Path("unknown.map")
     result = MapAnalysis(str(file_path), file_path.name, "")
@@ -212,11 +224,9 @@ def parse_map_text(text: str, path: str = "") -> MapAnalysis:
     # IAR names physical regions P5/P6 differently between linker files.
     # Classify by address rather than assuming P5=Flash/P6=SRAM.
     if result.flash.found and result.sram.found:
-        flash_like = 0x08000000 <= result.flash.start < 0x10000000
-        sram_like = 0x20000000 <= result.sram.start < 0x30000000
-        if not flash_like and sram_like is False:
-            pass
-        elif not flash_like or not sram_like:
+        p5_is_sram = 0x20000000 <= result.flash.start < 0x30000000
+        p6_is_flash = 0x08000000 <= result.sram.start < 0x10000000
+        if p5_is_sram and p6_is_flash:
             result.flash, result.sram = result.sram, result.flash
             result.flash.name = "Flash"
             result.sram.name = "SRAM"
@@ -284,6 +294,7 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
     # MAP files are commonly under EWARM/<config>/List while CubeMX .ioc is
     # several levels above the build directory.
     search_roots = [file_path.parent, *file_path.parents[:8]]
+    ioc_found = False
     for root in search_roots:
         try:
             iocs = list(root.glob("*.ioc"))
@@ -298,14 +309,17 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
             device = exact.group(1).upper() if exact else ""
             if device:
                 result.mcu_hint = device
-                result.icf_file = result.icf_file or ioc.name
+                result.icf_file = ioc.name
+                ioc_found = True
                 break
-        if result.mcu_hint:
+        if ioc_found:
             break
 
     # Fall back to the IAR linker configuration when no CubeMX project is
     # present beside the MAP file.
     for root in search_roots:
+        if ioc_found:
+            break
         try:
             candidates = list(root.glob("*.icf")) + list(root.rglob("*.icf"))
         except OSError:
@@ -319,6 +333,7 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
                 break
         if result.mcu_hint.startswith("STM32F103VC"):
             break
+    _validate_selected_mcu(result)
     result.signature = _signature(file_path)
     return result
 
