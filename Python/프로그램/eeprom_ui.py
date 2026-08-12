@@ -249,6 +249,7 @@ class EepromSourceSettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.current_root = current_root
+        self._tab_active = False
         self.embedded = embedded
         if embedded:
             self.setWindowFlags(Qt.Widget)
@@ -807,6 +808,15 @@ class EepromMapDialog(QDialog):
     def _automatic_refresh(self) -> None:
         if self.isVisible():
             self.refresh(False)
+
+    def set_active(self, active: bool) -> None:
+        """Pause timer-driven revision checks while another analysis tab is open."""
+        self._tab_active = active
+        self.setUpdatesEnabled(active)
+        if active:
+            self._reset_timer()
+        else:
+            self.timer.stop()
 
     def _progress(self, task_id: int, current: int, total: int, message: str) -> None:
         if task_id != self._active_task_id:

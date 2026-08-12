@@ -66,6 +66,7 @@ class IarMapAnalyzerWidget(QWidget):
         super().__init__(parent)
         self.root = ""
         self.analysis: MapAnalysis | None = None
+        self._tab_active = False
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         self.worker: _Worker | None = None
@@ -160,11 +161,21 @@ class IarMapAnalyzerWidget(QWidget):
         self.analysis = None
         self._reload_candidates()
         if self.root:
-            self.timer.start()
+            if self._tab_active:
+                self.timer.start()
             self.refresh(False)
         else:
             self.timer.stop()
             self._clear()
+
+    def set_active(self, active: bool) -> None:
+        """Tab changes must never trigger a fresh folder-wide MAP scan."""
+        self._tab_active = active
+        self.setUpdatesEnabled(active)
+        if active and self.root:
+            self.timer.start()
+        else:
+            self.timer.stop()
 
     def _reload_candidates(self) -> None:
         self.map_combo.blockSignals(True)
@@ -231,7 +242,9 @@ class IarMapAnalyzerWidget(QWidget):
 
     def _watch_map(self) -> None:
         if self.isVisible():
-            self._reload_candidates()
+            # Keep the current parsed result unless the selected MAP file
+            # itself changed. Candidate discovery is intentionally limited to
+            # root changes and the explicit refresh action.
             self.refresh(False)
 
     def _ready(self, analysis: MapAnalysis) -> None:
@@ -302,4 +315,3 @@ class IarMapAnalyzerWidget(QWidget):
         self._stack_table.setRowCount(0)
         self._summary_text.clear()
         self._raw_text.clear()
-

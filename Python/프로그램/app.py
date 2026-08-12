@@ -40,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.5.6"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -632,6 +632,8 @@ class MainWindow(QMainWindow):
         placeholder_layout = QVBoxLayout(self._trace_placeholder)
         placeholder_layout.addWidget(QLabel("C 소스 폴더를 열면 Trace 센터가 준비됩니다."))
         self._trace_tab_index = self.analysis_tabs.addTab(self._trace_placeholder, "Trace")
+        self.analysis_tabs.currentChanged.connect(self._analysis_tab_changed)
+        self._analysis_tab_changed(self.analysis_tabs.currentIndex())
         self.pages = QStackedWidget()
         self.pages.addWidget(self.start_page)
         self.pages.addWidget(self.analysis_tabs)
@@ -1055,7 +1057,17 @@ class MainWindow(QMainWindow):
         )
         if self.analysis_tabs is not None:
             self.analysis_tabs.setCurrentWidget(self.eeprom_view)
-        self.eeprom_view.refresh(False)
+        # Results are retained per item.  A tab switch only displays cache;
+        # explicit refresh or source-change detection performs a new check.
+
+    def _analysis_tab_changed(self, index: int) -> None:
+        if self.analysis_tabs is None:
+            return
+        current = self.analysis_tabs.widget(index)
+        if self.eeprom_view is not None:
+            self.eeprom_view.set_active(current is self.eeprom_view)
+        if self.iar_map_view is not None:
+            self.iar_map_view.set_active(current is self.iar_map_view)
 
     def _on_analysis_item_selected(self, display_name: str, source_root: str) -> None:
         """Apply one selected repository/root to every analysis tab."""
