@@ -706,6 +706,11 @@ class EepromMapDialog(QDialog):
         identity = self.source_combo.currentData()
         return next((item for item in self.configs if item.id == identity), None)
 
+    def select_source(self, source_id: str) -> None:
+        index = self.source_combo.findData(source_id)
+        if index >= 0:
+            self.source_combo.setCurrentIndex(index)
+
     def _source_changed(self) -> None:
         config = self._current_config()
         self._cancel_active_analysis()

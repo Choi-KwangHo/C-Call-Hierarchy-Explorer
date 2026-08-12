@@ -40,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -603,6 +603,16 @@ class MainWindow(QMainWindow):
         self.eeprom_view = EepromMapDialog(self.settings, "", self, start_analysis=False)
         self.eeprom_view.setWindowFlags(Qt.Widget)
         self.eeprom_view.sourceSelected.connect(self._on_analysis_item_selected)
+        self.item_combo = QComboBox(self)
+        self.item_combo.setToolTip("전체 분석 아이템")
+        for item in self.eeprom_view.configs:
+            self.item_combo.addItem(item.display_name, item.id)
+        self.item_combo.currentIndexChanged.connect(
+            lambda _index: self.eeprom_view.select_source(self.item_combo.currentData())
+        )
+        self.toolbar.addSeparator()
+        self.toolbar.addWidget(QLabel("아이템 "))
+        self.toolbar.addWidget(self.item_combo)
         self.analysis_tabs.addTab(self.eeprom_view, "EEPROM 메모리 맵")
         self.analysis_tabs.addTab(self.iar_map_view, "IAR MAP Analyzer")
         # Existing Trace UI is kept functionally intact and embedded as a tab.
