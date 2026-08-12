@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "C Call Hierarchy Explorer"
-$appVersion = "1.5.0"
+$appVersion = "1.5.1"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"

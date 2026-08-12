@@ -40,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
