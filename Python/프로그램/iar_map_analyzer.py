@@ -32,6 +32,39 @@ class MapSymbol:
 
 
 @dataclass(slots=True)
+class MapRegion:
+    name: str
+    start: int
+    end: int
+    rule: str = ""
+    placement_id: str = ""
+    sections: list[str] = field(default_factory=list)
+    objects: list[str] = field(default_factory=list)
+    used: int = 0
+    category: str = "General"
+
+    @property
+    def size(self) -> int:
+        return max(0, self.end - self.start + 1)
+
+
+@dataclass(slots=True)
+class PlacementSymbol:
+    name: str
+    start: int
+    size: int
+    object_file: str = ""
+    section: str = ""
+    kind: str = "Function"
+    region: str = ""
+    source_line: int = 0
+
+    @property
+    def end(self) -> int:
+        return self.start + max(0, self.size - 1)
+
+
+@dataclass(slots=True)
 class MapAnalysis:
     path: str
     file_name: str
@@ -55,6 +88,9 @@ class MapAnalysis:
     calloc_present: bool = False
     free_present: bool = False
     no_free: bool = False
+    regions: list[MapRegion] = field(default_factory=list)
+    placement_symbols: list[PlacementSymbol] = field(default_factory=list)
+    raw_map_text: str = ""
 
     @property
     def flash_used(self) -> int:
@@ -201,6 +237,124 @@ def _symbols(text: str, sram: MemoryRange) -> list[MapSymbol]:
     return result[:5000]
 
 
+def _category(name: str) -> str:
+    upper = name.upper()
+    if "VECTOR" in upper:
+        return "Vector"
+    if "SAFETY" in upper:
+        return "Safety ROM"
+    if "CLASS_B_RAM_REV" in upper:
+        return "Class B RAM Reverse"
+    if "CLASS_B_RAM" in upper:
+        return "Class B RAM"
+    if "RAM" in upper:
+        return "RAM"
+    if "ROM" in upper or "APP" in upper:
+        return "ROM"
+    return "General"
+
+
+def _icf_regions(text: str) -> list[MapRegion]:
+    regions: list[MapRegion] = []
+    pattern = re.compile(r"define\s+region\s+(\w+)\s*=\s*mem:\s*\[\s*from\s+(%s)\s+to\s+(%s)\s*\]\s*;" % (HEX_RE, HEX_RE), re.I | re.S)
+    for match in pattern.finditer(text):
+        name, start, end = match.group(1), _num(match.group(2)), _num(match.group(3))
+        tail = text[match.end(): match.end() + 1200]
+        place = re.search(r"place\s+in\s+" + re.escape(name) + r"\s*\{(?P<rule>.*?)\}", tail, re.I | re.S)
+        rule = re.sub(r"\s+", " ", place.group("rule").strip()) if place else ""
+        sections = re.findall(r"(?:section|block)\s+([.\w$]+)", rule, re.I)
+        regions.append(MapRegion(name, start, end, rule, sections=sections, category=_category(name)))
+    return regions
+
+
+def _map_placements(text: str) -> list[MapRegion]:
+    result: list[MapRegion] = []
+    pattern = re.compile(r'"?(P\d+(?:\|P\d+)*)"?\s*:\s*place\s+in\s*\[\s*from\s+(%s)\s+to\s+(%s)\s*\]\s*\{(?P<rule>.*?)\}' % (HEX_RE, HEX_RE), re.I | re.S)
+    for match in pattern.finditer(text):
+        rule = re.sub(r"\s+", " ", match.group("rule").strip())
+        result.append(MapRegion(match.group(1), _num(match.group(2)), _num(match.group(3)), rule, match.group(1), re.findall(r"(?:section|block)\s+([.\w$]+)", rule, re.I)))
+    return result
+
+
+def _map_function_symbols(text: str) -> list[PlacementSymbol]:
+    symbols: list[PlacementSymbol] = []
+    seen: set[tuple[str, int]] = set()
+    # Typical IAR: Function 0x800'59ed 0x6a Code Safe_FailSafe.o [1]
+    patterns = [
+        re.compile(r"^\s*([~\w:$<>.]+)\s+(%s)\s+(%s)\s+(Code|Data)\b(?:.*?\s+([\w.-]+\.o))?" % (HEX_RE, HEX_RE), re.I),
+        re.compile(r"^\s*(%s)\s+(%s)\s+(Code|Data)\s+([~\w:$<>.]+)(?:.*?\s+([\w.-]+\.o))?" % (HEX_RE, HEX_RE), re.I),
+    ]
+    for line_no, line in enumerate(text.splitlines(), 1):
+        for index, pattern in enumerate(patterns):
+            match = pattern.search(line)
+            if not match:
+                continue
+            if index == 0:
+                name, address, size, kind, obj = match.groups()
+            else:
+                address, size, kind, name, obj = match.groups()
+            start, byte_size = _num(address), _num(size)
+            if not start or not byte_size or name.startswith("__") or "$$" in name or name.upper().startswith("INTVEC"):
+                break
+            key = (name, start)
+            if key not in seen:
+                seen.add(key)
+                symbols.append(PlacementSymbol(name, start, byte_size, obj or "", kind="Function" if kind.casefold() == "code" else "Variable", source_line=line_no))
+            break
+    return symbols
+
+
+def _map_sections(text: str) -> list[tuple[str, int, int, str]]:
+    sections: list[tuple[str, int, int, str]] = []
+    pattern = re.compile(r"^\s*([.]?[\w.$]+)\s+(?:ro|rw|zi|zero|code|data)[^\r\n]*?(%s)\s+(%s)(?:\s+([\w.-]+\.o))?" % (HEX_RE, HEX_RE), re.I)
+    for line in text.splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        name, start, size, obj = match.groups()
+        sections.append((name, _num(start), _num(size), obj or ""))
+    return sections
+
+
+def _enrich_layout(result: MapAnalysis, icf_text: str = "") -> None:
+    mapped = _map_placements(result.raw_map_text)
+    regions = _icf_regions(icf_text)
+    for placement in mapped:
+        matches = [region for region in regions if region.start == placement.start and region.end == placement.end]
+        if matches:
+            region = matches[0]
+            region.placement_id = placement.placement_id
+            if not region.rule:
+                region.rule = placement.rule
+            region.sections = list(dict.fromkeys([*region.sections, *placement.sections]))
+        else:
+            placement.category = _category(placement.name)
+            regions.append(placement)
+    symbols = _map_function_symbols(result.raw_map_text)
+    sections = _map_sections(result.raw_map_text)
+    for symbol in symbols:
+        for section, section_start, section_size, section_object in sections:
+            if section_start <= symbol.start < section_start + section_size:
+                symbol.section = section
+                if not symbol.object_file:
+                    symbol.object_file = section_object
+                break
+        hits = [region for region in regions if region.start <= symbol.start <= region.end]
+        if len(hits) == 1:
+            symbol.region = hits[0].name
+            hits[0].used += symbol.size
+            if symbol.object_file and symbol.object_file not in hits[0].objects:
+                hits[0].objects.append(symbol.object_file)
+        elif len(hits) > 1:
+            result.warnings.append(f"Symbol {symbol.name} belongs to overlapping regions.")
+        else:
+            result.warnings.append(f"Symbol {symbol.name} is outside every defined region.")
+        if hits and symbol.end > hits[0].end:
+            result.warnings.append(f"Symbol {symbol.name} crosses region boundary.")
+    result.regions = sorted(regions, key=lambda item: (item.start, item.end, item.name))
+    result.placement_symbols = symbols
+
+
 def _validate_selected_mcu(result: MapAnalysis) -> None:
     """Validate the final MCU after .ioc/.icf resolution has completed."""
     expected = {"STM32F103VCT6": (256 * 1024, 48 * 1024)}.get(result.mcu_hint)
@@ -216,6 +370,7 @@ def _validate_selected_mcu(result: MapAnalysis) -> None:
 def parse_map_text(text: str, path: str = "") -> MapAnalysis:
     file_path = Path(path) if path else Path("unknown.map")
     result = MapAnalysis(str(file_path), file_path.name, "")
+    result.raw_map_text = text
     result.readonly_code = _summary(text, r"readonly\s+code\s+memory")
     result.readonly_data = _summary(text, r"readonly\s+data\s+memory")
     result.readwrite_data = _summary(text, r"readwrite\s+data\s+memory")
@@ -280,6 +435,7 @@ def parse_map_text(text: str, path: str = "") -> MapAnalysis:
         result.warnings.append("CSTACK과 HEAP 배치가 겹치거나 순서가 불명확합니다.")
     if not result.stack_usage:
         result.warnings.append("IAR Stack Usage 표를 찾지 못했습니다. 실제 Stack 여유는 런타임 측정이 필요합니다.")
+    _enrich_layout(result)
     return result
 
 
@@ -295,6 +451,7 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
     # several levels above the build directory.
     search_roots = [file_path.parent, *file_path.parents[:8]]
     ioc_found = False
+    resolved_icf: Path | None = None
     for root in search_roots:
         try:
             iocs = list(root.glob("*.ioc"))
@@ -321,7 +478,10 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
         if ioc_found:
             break
         try:
-            candidates = list(root.glob("*.icf")) + list(root.rglob("*.icf"))
+            # Searching every descendant of each ancestor makes opening a MAP
+            # file unexpectedly expensive. ICF files are normally next to the
+            # project/MAP or referenced by name, so inspect direct children.
+            candidates = list(root.glob("*.icf"))
         except OSError:
             candidates = []
         for icf in candidates:
@@ -330,9 +490,26 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
             if match:
                 result.mcu_hint = "STM32F103" + match.group(1)
                 result.icf_file = icf.name
+                resolved_icf = icf
                 break
         if result.mcu_hint.startswith("STM32F103VC"):
             break
+    # Even when the file name has no device marker, use the ICF identified by
+    # the MAP or nearest project directory for region and placement metadata.
+    if resolved_icf is None:
+        for root in search_roots:
+            try:
+                candidate = next(root.glob("*.icf"))
+            except (OSError, StopIteration):
+                continue
+            resolved_icf = candidate
+            result.icf_file = candidate.name
+            break
+    if resolved_icf is not None:
+        try:
+            _enrich_layout(result, resolved_icf.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            result.warnings.append("ICF file could not be read; placement-only layout is shown.")
     _validate_selected_mcu(result)
     result.signature = _signature(file_path)
     return result

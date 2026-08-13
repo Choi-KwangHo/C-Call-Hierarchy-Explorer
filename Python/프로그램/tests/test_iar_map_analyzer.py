@@ -60,6 +60,32 @@ class IarMapAnalyzerTests(unittest.TestCase):
             parsed = parse_map_file(preferred)
             self.assertIn("project.map", parsed.path)
 
+    def test_icf_regions_and_symbols_are_mapped_for_layout_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            icf = root / "layout.icf"
+            icf.write_text("""
+define region VECTOR_region = mem:[from 0x08003000 to 0x08003FFF];
+define region SAFETY_ROM_region = mem:[from 0x08004000 to 0x0800BFFF];
+define region CLASS_B_RAM_region = mem:[from 0x20000400 to 0x20001BFF];
+place in SAFETY_ROM_region { section .safety_code };
+""", encoding="utf-8")
+            map_file = root / "layout.map"
+            map_file.write_text("""
+config file: layout.icf
+"P1": place in [from 0x08003000 to 0x08003FFF] { first block INTVEC };
+"P2": place in [from 0x08004000 to 0x0800BFFF] { section .safety_code };
+Safety_CheckFailSafe 0x800'59ed 0x6a Code Safe_FailSafe.o [1]
+classb_status 0x2000'0400 0x4 Data stm32fxx_STLstartup.o [1]
+""", encoding="utf-8")
+            result = parse_map_file(map_file)
+            safety = next(region for region in result.regions if region.name == "SAFETY_ROM_region")
+            self.assertEqual(safety.category, "Safety ROM")
+            self.assertEqual(safety.used, 0x6A)
+            function = next(item for item in result.placement_symbols if item.name == "Safety_CheckFailSafe")
+            self.assertEqual(function.region, "SAFETY_ROM_region")
+            self.assertEqual(function.end, 0x08005A56)
+
     def test_main_workspace_exposes_integrated_analysis_tabs(self) -> None:
         from PySide6.QtWidgets import QApplication
         from app import MainWindow

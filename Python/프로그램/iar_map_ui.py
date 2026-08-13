@@ -123,7 +123,8 @@ class IarMapAnalyzerWidget(QWidget):
         self.sram_metric = _Metric("SRAM 사용률", "#A776F0")
         self.stack_metric = _Metric("CSTACK 대비 Stack", "#43C982")
         self.heap_metric = _Metric("HEAP", "#F4A73B")
-        for column, widget in enumerate((self.map_metric, self.flash_metric, self.sram_metric, self.stack_metric, self.heap_metric)):
+        self.region_metric = _Metric("Regions / Symbols", "#E95D99")
+        for column, widget in enumerate((self.map_metric, self.flash_metric, self.sram_metric, self.stack_metric, self.heap_metric, self.region_metric)):
             metrics.addWidget(widget, 0, column)
         outer.addLayout(metrics)
 
@@ -133,6 +134,15 @@ class IarMapAnalyzerWidget(QWidget):
         self.memory_table.horizontalHeader().setStretchLastSection(True)
         self.memory_table.setAlternatingRowColors(True)
         self.memory_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.region_table = QTableWidget(0, 8)
+        self.region_table.setHorizontalHeaderLabels(["Type", "Region / Placement", "Start", "End", "Size", "Used", "Free", "Rule"])
+        self.region_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.region_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.region_table.itemSelectionChanged.connect(self._region_selected)
+        self.symbol_table = QTableWidget(0, 7)
+        self.symbol_table.setHorizontalHeaderLabels(["Kind", "Name", "Start", "Size", "End", "Object", "Section / Region"])
+        self.symbol_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.symbol_table.setSortingEnabled(True)
         self._summary_text = QPlainTextEdit()
         self._summary_text.setReadOnly(True)
         self._summary_text.setFont(QFont("Cascadia Mono", 10))
@@ -144,6 +154,8 @@ class IarMapAnalyzerWidget(QWidget):
         self._stack_table.horizontalHeader().setStretchLastSection(True)
         self._stack_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tabs.addTab(self.memory_table, "메모리 배치")
+        self.tabs.addTab(self.region_table, "Region Details")
+        self.tabs.addTab(self.symbol_table, "Function / Variable Placement")
         self.tabs.addTab(self._stack_table, "Stack Usage")
         self.tabs.addTab(self._summary_text, "분석 결과")
         self.tabs.addTab(self._raw_text, "MAP 원본 라인")
@@ -279,6 +291,10 @@ class IarMapAnalyzerWidget(QWidget):
         if a.heap.size:
             heap_state = "사용 API 감지" if (a.malloc_present or a.calloc_present) else "예약량 확인"
         self.heap_metric.set_value(heap_state, f"{self._fmt(a.heap.size)} · NoFree={'예' if a.no_free else '아니오'}")
+        self.region_metric.set_value(
+            f"{len(a.regions)} / {len(a.placement_symbols)}",
+            f"Safety {sum(1 for x in a.placement_symbols if x.region.upper().startswith('SAFETY'))} · Warnings {len(a.warnings)}",
+        )
 
         rows = [a.flash, a.sram, a.stack_bottom, a.cstack, a.heap]
         self.memory_table.setRowCount(0)
@@ -290,6 +306,17 @@ class IarMapAnalyzerWidget(QWidget):
             values = [block.name, self._fmt(block.size), f"0x{block.start:08X}", f"0x{block.end:08X}", "확인" if block.found else "기본값/추정"]
             for col, value in enumerate(values):
                 self.memory_table.setItem(row, col, QTableWidgetItem(value))
+        self.region_table.setRowCount(0)
+        for region in a.regions:
+            row = self.region_table.rowCount()
+            self.region_table.insertRow(row)
+            values = [region.category, region.name, f"0x{region.start:08X}", f"0x{region.end:08X}", self._fmt(region.size), self._fmt(region.used), self._fmt(max(0, region.size - region.used)), region.rule]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 1:
+                    item.setData(Qt.UserRole, region.name)
+                self.region_table.setItem(row, col, item)
+        self._show_symbols(a.placement_symbols)
         self._stack_table.setRowCount(0)
         for item in a.stack_usage:
             row = self._stack_table.rowCount()
@@ -307,11 +334,34 @@ class IarMapAnalyzerWidget(QWidget):
         self._summary_text.setPlainText("\n".join(summary))
         self._raw_text.setPlainText("\n".join(a.raw_lines))
 
+    def _show_symbols(self, symbols) -> None:
+        self.symbol_table.setSortingEnabled(False)
+        self.symbol_table.setRowCount(0)
+        for symbol in symbols:
+            row = self.symbol_table.rowCount()
+            self.symbol_table.insertRow(row)
+            values = [symbol.kind, symbol.name, f"0x{symbol.start:08X}", self._fmt(symbol.size), f"0x{symbol.end:08X}", symbol.object_file, f"{symbol.section or '-'} / {symbol.region or 'Unmapped'}"]
+            for col, value in enumerate(values):
+                self.symbol_table.setItem(row, col, QTableWidgetItem(value))
+        self.symbol_table.setSortingEnabled(True)
+
+    def _region_selected(self) -> None:
+        if self.analysis is None:
+            return
+        rows = self.region_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        name = self.region_table.item(rows[0].row(), 1).data(Qt.UserRole)
+        self._show_symbols([symbol for symbol in self.analysis.placement_symbols if symbol.region == name])
+        self.tabs.setCurrentWidget(self.symbol_table)
+
     def _clear(self) -> None:
         self.analysis = None
-        for metric in (self.map_metric, self.flash_metric, self.sram_metric, self.stack_metric, self.heap_metric):
+        for metric in (self.map_metric, self.flash_metric, self.sram_metric, self.stack_metric, self.heap_metric, self.region_metric):
             metric.set_value("-", "")
         self.memory_table.setRowCount(0)
+        self.region_table.setRowCount(0)
+        self.symbol_table.setRowCount(0)
         self._stack_table.setRowCount(0)
         self._summary_text.clear()
         self._raw_text.clear()
