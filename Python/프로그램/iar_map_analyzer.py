@@ -254,6 +254,23 @@ def _category(name: str) -> str:
     return "General"
 
 
+def _region_category(name: str, rule: str, start: int) -> str:
+    text = (name + " " + rule).upper()
+    if "INTVEC" in text or "VECTOR" in text:
+        return "Vector"
+    if "SAFETY" in text or "STL" in text:
+        return "Safety ROM"
+    if "CLASS_B_RAM_REV" in text:
+        return "Class B RAM Reverse"
+    if "CLASS_B_RAM" in text:
+        return "Class B RAM"
+    if 0x08000000 <= start < 0x10000000:
+        return "ROM"
+    if 0x20000000 <= start < 0x30000000:
+        return "RAM"
+    return _category(name)
+
+
 def _icf_regions(text: str) -> list[MapRegion]:
     regions: list[MapRegion] = []
     pattern = re.compile(r"define\s+region\s+(\w+)\s*=\s*mem:\s*\[\s*from\s+(%s)\s+to\s+(%s)\s*\]\s*;" % (HEX_RE, HEX_RE), re.I | re.S)
@@ -328,8 +345,9 @@ def _enrich_layout(result: MapAnalysis, icf_text: str = "") -> None:
                 region.rule = placement.rule
             region.sections = list(dict.fromkeys([*region.sections, *placement.sections]))
         else:
-            placement.category = _category(placement.name)
             regions.append(placement)
+    for region in regions:
+        region.category = _region_category(region.name, region.rule, region.start)
     symbols = _map_function_symbols(result.raw_map_text)
     sections = _map_sections(result.raw_map_text)
     for symbol in symbols:
@@ -351,6 +369,24 @@ def _enrich_layout(result: MapAnalysis, icf_text: str = "") -> None:
             result.warnings.append(f"Symbol {symbol.name} is outside every defined region.")
         if hits and symbol.end > hits[0].end:
             result.warnings.append(f"Symbol {symbol.name} crosses region boundary.")
+    # Linker MAP files often expose INTVEC only as a block, not as individual
+    # symbols. Show addressable vector slots so the placement can still be
+    # audited; named vector symbols, when present, remain preferred.
+    for region in regions:
+        if region.category != "Vector" or any(item.region == region.name for item in symbols):
+            continue
+        vector_bytes = min(region.size, 0x130)
+        for offset in range(0, vector_bytes, 4):
+            symbols.append(PlacementSymbol(f"Vector[{offset // 4:02d}]", region.start + offset, 4, kind="Vector", region=region.name))
+        region.used = max(region.used, vector_bytes)
+    for region in regions:
+        region_symbols = [item for item in symbols if item.region == region.name]
+        if region.category == "Safety ROM" and any(item.section in {".text", ".rodata"} for item in region_symbols):
+            result.warnings.append(f"General section found in safety region {region.name}.")
+        if region.category == "Vector" and any(item.kind == "Function" for item in region_symbols):
+            result.warnings.append(f"Function symbol found in vector region {region.name}.")
+        if region.category.startswith("Class B RAM") and any(item.kind != "Variable" for item in region_symbols):
+            result.warnings.append(f"Non-variable symbol found in Class B RAM region {region.name}.")
     result.regions = sorted(regions, key=lambda item: (item.start, item.end, item.name))
     result.placement_symbols = symbols
 

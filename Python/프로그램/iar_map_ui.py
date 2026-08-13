@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
@@ -33,6 +33,7 @@ class _Worker(QRunnable):
 
 
 class _Metric(QFrame):
+    clicked = Signal()
     def __init__(self, title: str, accent: str) -> None:
         super().__init__()
         self.setObjectName("mapMetric")
@@ -55,6 +56,62 @@ class _Metric(QFrame):
     def set_value(self, value: str, detail: str = "") -> None:
         self.value.setText(value)
         self.detail.setText(detail)
+
+    def mousePressEvent(self, event) -> None:
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class _RegionMap(QWidget):
+    """Address-oriented map: small regions get a readable minimum height."""
+    selected = Signal(str)
+
+    COLORS = {"ROM": "#2E9CE6", "RAM": "#A776F0", "Vector": "#F4A73B", "Safety ROM": "#E95D99", "Class B RAM": "#43C982", "Class B RAM Reverse": "#72B7A1"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.regions = []
+        self.filter = "all"
+        self._rectangles = []
+        self.setMinimumWidth(230)
+
+    def set_regions(self, regions, filter_name: str = "all") -> None:
+        self.regions = regions
+        self.filter = filter_name
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#10161B"))
+        shown = [r for r in self.regions if self.filter == "all" or (self.filter == "rom" and 0x08000000 <= r.start < 0x10000000) or (self.filter == "ram" and 0x20000000 <= r.start < 0x30000000)]
+        if not shown:
+            painter.setPen(QColor("#9EAFBA")); painter.drawText(self.rect(), Qt.AlignCenter, "No matching regions")
+            return
+        top, height, x, width = 28, max(1, self.height() - 56), 38, max(90, self.width() - 76)
+        total = sum(max(r.size, 1) for r in shown)
+        y = top
+        self._rectangles = []
+        for region in shown:
+            h = max(20, int(height * max(region.size, 1) / max(total, 1)))
+            h = min(h, top + height - y)
+            color = QColor(self.COLORS.get(region.category, "#607D8B"))
+            painter.fillRect(x, y, width, h, color)
+            painter.setPen(QPen(QColor("#EAF2F5")))
+            painter.drawRect(x, y, width, h)
+            label = f"{region.name}\n0x{region.start:08X} · {region.size:,} B"
+            painter.drawText(x + 6, y + 3, width - 12, max(18, h - 6), Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, label)
+            self._rectangles.append((y, y + h, region.name))
+            y += h
+            if y >= top + height:
+                break
+        painter.setPen(QColor("#9EAFBA")); painter.drawText(8, 14, "Address map · minimum height applied")
+
+    def mousePressEvent(self, event) -> None:
+        for top, bottom, name in self._rectangles:
+            if top <= event.position().y() <= bottom:
+                self.selected.emit(name)
+                break
+        super().mousePressEvent(event)
 
 
 class IarMapAnalyzerWidget(QWidget):
@@ -123,7 +180,10 @@ class IarMapAnalyzerWidget(QWidget):
         self.sram_metric = _Metric("SRAM 사용률", "#A776F0")
         self.stack_metric = _Metric("CSTACK 대비 Stack", "#43C982")
         self.heap_metric = _Metric("HEAP", "#F4A73B")
+        self.flash_metric.clicked.connect(lambda: self._set_memory_filter("rom"))
+        self.sram_metric.clicked.connect(lambda: self._set_memory_filter("ram"))
         self.region_metric = _Metric("Regions / Symbols", "#E95D99")
+        self.region_metric.clicked.connect(lambda: self._set_memory_filter("all"))
         for column, widget in enumerate((self.map_metric, self.flash_metric, self.sram_metric, self.stack_metric, self.heap_metric, self.region_metric)):
             metrics.addWidget(widget, 0, column)
         outer.addLayout(metrics)
@@ -135,10 +195,18 @@ class IarMapAnalyzerWidget(QWidget):
         self.memory_table.setAlternatingRowColors(True)
         self.memory_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.region_table = QTableWidget(0, 8)
-        self.region_table.setHorizontalHeaderLabels(["Type", "Region / Placement", "Start", "End", "Size", "Used", "Free", "Rule"])
+        self.region_table.setHorizontalHeaderLabels(["Type", "Region / Placement", "Rule", "Start", "End", "Size / Usage", "Used", "Free"])
         self.region_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.region_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.region_table.itemSelectionChanged.connect(self._region_selected)
+        self.region_map = _RegionMap()
+        self.region_map.selected.connect(self._select_region_by_name)
+        self.region_splitter = QSplitter(Qt.Horizontal)
+        self.region_splitter.addWidget(self.region_map)
+        self.region_splitter.addWidget(self.region_table)
+        self.region_splitter.setStretchFactor(0, 15)
+        self.region_splitter.setStretchFactor(1, 35)
+        self.region_splitter.setSizes([300, 700])
         self.symbol_table = QTableWidget(0, 7)
         self.symbol_table.setHorizontalHeaderLabels(["Kind", "Name", "Start", "Size", "End", "Object", "Section / Region"])
         self.symbol_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -154,7 +222,7 @@ class IarMapAnalyzerWidget(QWidget):
         self._stack_table.horizontalHeader().setStretchLastSection(True)
         self._stack_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tabs.addTab(self.memory_table, "메모리 배치")
-        self.tabs.addTab(self.region_table, "Region Details")
+        self.tabs.addTab(self.region_splitter, "Region Details")
         self.tabs.addTab(self.symbol_table, "Function / Variable Placement")
         self.tabs.addTab(self._stack_table, "Stack Usage")
         self.tabs.addTab(self._summary_text, "분석 결과")
@@ -306,16 +374,7 @@ class IarMapAnalyzerWidget(QWidget):
             values = [block.name, self._fmt(block.size), f"0x{block.start:08X}", f"0x{block.end:08X}", "확인" if block.found else "기본값/추정"]
             for col, value in enumerate(values):
                 self.memory_table.setItem(row, col, QTableWidgetItem(value))
-        self.region_table.setRowCount(0)
-        for region in a.regions:
-            row = self.region_table.rowCount()
-            self.region_table.insertRow(row)
-            values = [region.category, region.name, f"0x{region.start:08X}", f"0x{region.end:08X}", self._fmt(region.size), self._fmt(region.used), self._fmt(max(0, region.size - region.used)), region.rule]
-            for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                if col == 1:
-                    item.setData(Qt.UserRole, region.name)
-                self.region_table.setItem(row, col, item)
+        self._populate_regions(a.regions, "all")
         self._show_symbols(a.placement_symbols)
         self._stack_table.setRowCount(0)
         for item in a.stack_usage:
@@ -345,6 +404,28 @@ class IarMapAnalyzerWidget(QWidget):
                 self.symbol_table.setItem(row, col, QTableWidgetItem(value))
         self.symbol_table.setSortingEnabled(True)
 
+    def _populate_regions(self, regions, filter_name: str) -> None:
+        shown = [region for region in regions if filter_name == "all" or (filter_name == "rom" and 0x08000000 <= region.start < 0x10000000) or (filter_name == "ram" and 0x20000000 <= region.start < 0x30000000)]
+        self.region_map.set_regions(shown, filter_name)
+        self.region_table.setRowCount(0)
+        for region in shown:
+            row = self.region_table.rowCount()
+            self.region_table.insertRow(row)
+            values = [region.category, region.name, region.rule, f"0x{region.start:08X}", f"0x{region.end:08X}", f"{self._fmt(region.size)} · {self._percent(region.used, region.size)}", self._fmt(region.used), self._fmt(max(0, region.size - region.used))]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 1:
+                    item.setData(Qt.UserRole, region.name)
+                self.region_table.setItem(row, col, item)
+
+    def _set_memory_filter(self, filter_name: str) -> None:
+        if self.analysis is None:
+            return
+        self._populate_regions(self.analysis.regions, filter_name)
+        symbols = [symbol for symbol in self.analysis.placement_symbols if (filter_name == "rom" and 0x08000000 <= symbol.start < 0x10000000) or (filter_name == "ram" and 0x20000000 <= symbol.start < 0x30000000)]
+        self._show_symbols(symbols)
+        self.tabs.setCurrentWidget(self.region_splitter)
+
     def _region_selected(self) -> None:
         if self.analysis is None:
             return
@@ -354,6 +435,13 @@ class IarMapAnalyzerWidget(QWidget):
         name = self.region_table.item(rows[0].row(), 1).data(Qt.UserRole)
         self._show_symbols([symbol for symbol in self.analysis.placement_symbols if symbol.region == name])
         self.tabs.setCurrentWidget(self.symbol_table)
+
+    def _select_region_by_name(self, name: str) -> None:
+        for row in range(self.region_table.rowCount()):
+            item = self.region_table.item(row, 1)
+            if item is not None and item.data(Qt.UserRole) == name:
+                self.region_table.selectRow(row)
+                return
 
     def _clear(self) -> None:
         self.analysis = None
