@@ -40,7 +40,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.9"
+APP_VERSION = "1.5.10"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -935,7 +935,9 @@ class MainWindow(QMainWindow):
         self._job_finished(show_progress)
         if self._refresh_after_cache and not self._closing:
             self._refresh_after_cache = False
-            QTimer.singleShot(0, lambda: self._check_updates(True))
+            # Let the restored call tree paint before background metadata
+            # checking starts; the cache remains the visible initial state.
+            QTimer.singleShot(250, lambda: self._check_updates(True))
 
     def _progress(self, phase: str, current: int, total: int, detail: str, show: bool) -> None:
         self.status_label.setText(f"{phase}: {current:,}/{total:,}  {Path(detail).name if detail else ''}")

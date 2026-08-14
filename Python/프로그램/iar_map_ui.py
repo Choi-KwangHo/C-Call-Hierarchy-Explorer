@@ -62,19 +62,8 @@ class _Metric(QFrame):
         super().mousePressEvent(event)
 
 
-class _SortableItem(QTableWidgetItem):
-    """Table item which can retain a numeric sort key behind formatted text."""
-
-    def __lt__(self, other) -> bool:
-        left = self.data(Qt.UserRole + 1)
-        right = other.data(Qt.UserRole + 1)
-        if left is not None and right is not None:
-            return left < right
-        return super().__lt__(other)
-
-
 class SortableTable(QTableWidget):
-    """Reusable double-click header sorting for MAP Analyzer tables."""
+    """Reusable, Qt-native double-click header sorting for MAP Analyzer tables."""
 
     def __init__(self, rows: int = 0, columns: int = 0, parent=None) -> None:
         super().__init__(rows, columns, parent)
@@ -293,20 +282,30 @@ class IarMapAnalyzerWidget(QWidget):
         self._last_root = normalized
         self.root = normalized
         self.analysis = None
-        self._reload_candidates()
         if self.root:
             if self._tab_active:
+                self._reload_candidates()
                 self.timer.start()
-            self.refresh(False)
+                self.refresh(False)
+            else:
+                # Opening a cached call-tree project must paint immediately.
+                # MAP discovery/parsing is deferred until this tab is opened.
+                self.map_combo.blockSignals(True)
+                self.map_combo.clear()
+                self.map_combo.blockSignals(False)
+                self.path_label.setText("MAP analysis is prepared when this tab is opened.")
         else:
             self.timer.stop()
             self._clear()
 
     def set_active(self, active: bool) -> None:
-        """Tab changes must never trigger a fresh folder-wide MAP scan."""
+        """Prepare MAP data only when its tab is opened, never during cache restore."""
         self._tab_active = active
         self.setUpdatesEnabled(active)
         if active and self.root:
+            if not self.map_combo.count():
+                self._reload_candidates()
+            self.refresh(False)
             self.timer.start()
         else:
             self.timer.stop()
@@ -404,7 +403,9 @@ class IarMapAnalyzerWidget(QWidget):
 
     @staticmethod
     def _cell(text: str, sort_key=None) -> QTableWidgetItem:
-        item = _SortableItem(text)
+        # Qt invokes sorting from C++.  Keeping comparison native avoids a
+        # Python virtual __lt__ call during cached-project restoration.
+        item = QTableWidgetItem(text)
         if sort_key is not None:
             item.setData(Qt.UserRole + 1, sort_key)
         return item

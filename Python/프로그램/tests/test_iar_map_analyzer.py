@@ -98,6 +98,27 @@ HardFault_Handler 0x08012028 0x08 Code startup.o [1]
         vector_names = [item.name for item in result.placement_symbols if item.region == "P1"]
         self.assertEqual(vector_names[1:4], ["Reset_Handler", "NMI_Handler", "HardFault_Handler"])
 
+    def test_map_table_sorting_stays_in_qt_and_map_scan_is_deferred_when_inactive(self) -> None:
+        from PySide6.QtWidgets import QApplication, QTableWidgetItem
+        from iar_map_ui import IarMapAnalyzerWidget, SortableTable
+
+        app = QApplication.instance() or QApplication([])
+        table = SortableTable(0, 1)
+        for value in ("B", "A"):
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(value))
+        table._sort_ascending(0)
+        self.assertEqual(table.item(0, 0).text(), "A")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            widget = IarMapAnalyzerWidget()
+            widget.set_root(temporary)
+            self.assertEqual(widget.map_combo.count(), 0)
+            widget.set_active(True)
+            app.processEvents()
+            widget.close()
+
     def test_main_workspace_exposes_integrated_analysis_tabs(self) -> None:
         from PySide6.QtWidgets import QApplication
         from app import MainWindow
