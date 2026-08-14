@@ -47,6 +47,20 @@ class MapRegion:
     def size(self) -> int:
         return max(0, self.end - self.start + 1)
 
+    @property
+    def display_name(self) -> str:
+        """Human-readable ICF placement name while retaining the MAP ID."""
+        labels = [item for item in self.sections if item and item.casefold() not in {"ro", "rw", "zi", "code", "data"}]
+        if labels:
+            label = ", ".join(dict.fromkeys(labels[:2]))
+            if len(dict.fromkeys(labels)) > 2:
+                label += ", …"
+        else:
+            # A MAP placement such as P3 { ro } has no semantic section name.
+            label = self.category if self.category not in {"General", "ROM", "RAM"} else f"{self.category} placement"
+        suffix = self.placement_id or (self.name if re.fullmatch(r"P\d+(?:\|P\d+)*", self.name) else "")
+        return f"{label} [{suffix}]" if suffix else label
+
 
 @dataclass(slots=True)
 class PlacementSymbol:
@@ -321,6 +335,41 @@ def _map_function_symbols(text: str) -> list[PlacementSymbol]:
     return symbols
 
 
+def _vector_slot_symbols(text: str, region: MapRegion, symbols: list[PlacementSymbol]) -> list[PlacementSymbol]:
+    """Return audit-friendly Cortex-M vector entries.
+
+    A linker MAP normally records the vector *block* and handler code addresses,
+    but not the pointer values between them.  The core exception-vector order is
+    fixed, so use a handler name only when that exact symbol is present in MAP;
+    leave all other slots explicit rather than guessing an IRQ mapping.
+    """
+    available = {item.name.casefold(): item.name for item in symbols}
+    # Some IAR variants omit the size column for weak handlers (notably
+    # Reset_Handler), so harvest their names directly from the symbol listing.
+    handler_pattern = re.compile(
+        rf"^\s*([A-Za-z_]\w*(?:Handler|IRQHandler))\s+{HEX_RE}(?:\s+{HEX_RE})?\s+Code\b",
+        re.I | re.M,
+    )
+    for match in handler_pattern.finditer(text):
+        available.setdefault(match.group(1).casefold(), match.group(1))
+    core_slots = {
+        0: "Initial MSP",
+        1: "Reset_Handler", 2: "NMI_Handler", 3: "HardFault_Handler",
+        4: "MemManage_Handler", 5: "BusFault_Handler", 6: "UsageFault_Handler",
+        11: "SVC_Handler", 12: "DebugMon_Handler", 14: "PendSV_Handler", 15: "SysTick_Handler",
+    }
+    vector_bytes = min(region.size, 0x130)
+    result: list[PlacementSymbol] = []
+    for offset in range(0, vector_bytes, 4):
+        slot = offset // 4
+        preferred = core_slots.get(slot, f"Vector[{slot:02d}]")
+        # Reset/exception names are only asserted if they are actually linked.
+        if slot and slot in core_slots and preferred.casefold() not in available:
+            preferred = f"Vector[{slot:02d}] ({preferred})"
+        result.append(PlacementSymbol(preferred, region.start + offset, 4, kind="Vector", region=region.name))
+    return result
+
+
 def _map_sections(text: str) -> list[tuple[str, int, int, str]]:
     sections: list[tuple[str, int, int, str]] = []
     pattern = re.compile(r"^\s*([.]?[\w.$]+)\s+(?:ro|rw|zi|zero|code|data)[^\r\n]*?(%s)\s+(%s)(?:\s+([\w.-]+\.o))?" % (HEX_RE, HEX_RE), re.I)
@@ -375,10 +424,9 @@ def _enrich_layout(result: MapAnalysis, icf_text: str = "") -> None:
     for region in regions:
         if region.category != "Vector" or any(item.region == region.name for item in symbols):
             continue
-        vector_bytes = min(region.size, 0x130)
-        for offset in range(0, vector_bytes, 4):
-            symbols.append(PlacementSymbol(f"Vector[{offset // 4:02d}]", region.start + offset, 4, kind="Vector", region=region.name))
-        region.used = max(region.used, vector_bytes)
+        vector_symbols = _vector_slot_symbols(result.raw_map_text, region, symbols)
+        symbols.extend(vector_symbols)
+        region.used = max(region.used, len(vector_symbols) * 4)
     for region in regions:
         region_symbols = [item for item in symbols if item.region == region.name]
         if region.category == "Safety ROM" and any(item.section in {".text", ".rodata"} for item in region_symbols):

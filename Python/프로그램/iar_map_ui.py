@@ -62,11 +62,34 @@ class _Metric(QFrame):
         super().mousePressEvent(event)
 
 
+class _SortableItem(QTableWidgetItem):
+    """Table item which can retain a numeric sort key behind formatted text."""
+
+    def __lt__(self, other) -> bool:
+        left = self.data(Qt.UserRole + 1)
+        right = other.data(Qt.UserRole + 1)
+        if left is not None and right is not None:
+            return left < right
+        return super().__lt__(other)
+
+
+class SortableTable(QTableWidget):
+    """Reusable double-click header sorting for MAP Analyzer tables."""
+
+    def __init__(self, rows: int = 0, columns: int = 0, parent=None) -> None:
+        super().__init__(rows, columns, parent)
+        self.horizontalHeader().sectionDoubleClicked.connect(self._sort_ascending)
+
+    def _sort_ascending(self, column: int) -> None:
+        self.sortItems(column, Qt.AscendingOrder)
+
+
 class _RegionMap(QWidget):
     """Address-oriented map: small regions get a readable minimum height."""
     selected = Signal(str)
 
-    COLORS = {"ROM": "#2E9CE6", "RAM": "#A776F0", "Vector": "#F4A73B", "Safety ROM": "#E95D99", "Class B RAM": "#43C982", "Class B RAM Reverse": "#72B7A1"}
+    # Muted colors distinguish regions without competing with the detail table.
+    COLORS = {"ROM": "#5D83A5", "RAM": "#766C9B", "Vector": "#B58A58", "Safety ROM": "#A97082", "Class B RAM": "#5E927E", "Class B RAM Reverse": "#769C90"}
 
     def __init__(self) -> None:
         super().__init__()
@@ -87,6 +110,8 @@ class _RegionMap(QWidget):
         if not shown:
             painter.setPen(QColor("#9EAFBA")); painter.drawText(self.rect(), Qt.AlignCenter, "No matching regions")
             return
+        self._paint_grouped_regions(painter, shown)
+        return
         top, height, x, width = 28, max(1, self.height() - 56), 38, max(90, self.width() - 76)
         total = sum(max(r.size, 1) for r in shown)
         y = top
@@ -106,9 +131,38 @@ class _RegionMap(QWidget):
                 break
         painter.setPen(QColor("#9EAFBA")); painter.drawText(8, 14, "Address map · minimum height applied")
 
+    def _paint_grouped_regions(self, painter: QPainter, shown) -> None:
+        """Draw all regions with legible labels, using two columns when needed."""
+        top, height = 28, max(1, self.height() - 56)
+        columns = 2 if len(shown) * 28 > height else 1
+        gap, outer_x = 8, 10
+        column_width = max(86, (self.width() - outer_x * 2 - gap * (columns - 1)) // columns)
+        groups = [shown[index::columns] for index in range(columns)]
+        self._rectangles = []
+        for column, group in enumerate(groups):
+            x = outer_x + column * (column_width + gap)
+            total = sum(max(region.size, 1) for region in group)
+            minimum = 28
+            distributable = max(0, height - minimum * len(group))
+            y = top
+            for region in group:
+                item_height = minimum + int(distributable * max(region.size, 1) / max(total, 1))
+                item_height = min(item_height, top + height - y)
+                painter.fillRect(x, y, column_width, item_height, QColor(self.COLORS.get(region.category, "#667784")))
+                painter.setPen(QPen(QColor("#D9E4E8")))
+                painter.drawRect(x, y, column_width, item_height)
+                label = f"{region.display_name}\\n0x{region.start:08X}  ·  {region.size:,} B"
+                if item_height < 42:
+                    label = f"{region.display_name}  ·  {region.size:,} B"
+                painter.drawText(x + 6, y + 2, column_width - 12, max(18, item_height - 4), Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, label)
+                self._rectangles.append((x, y, x + column_width, y + item_height, region.name))
+                y += item_height
+        painter.setPen(QColor("#9EAFBA"))
+        painter.drawText(8, 14, "Address map · readable minimum height")
+
     def mousePressEvent(self, event) -> None:
-        for top, bottom, name in self._rectangles:
-            if top <= event.position().y() <= bottom:
+        for left, top, right, bottom, name in self._rectangles:
+            if left <= event.position().x() <= right and top <= event.position().y() <= bottom:
                 self.selected.emit(name)
                 break
         super().mousePressEvent(event)
@@ -189,12 +243,12 @@ class IarMapAnalyzerWidget(QWidget):
         outer.addLayout(metrics)
 
         self.tabs = QTabWidget()
-        self.memory_table = QTableWidget(0, 5)
+        self.memory_table = SortableTable(0, 5)
         self.memory_table.setHorizontalHeaderLabels(["영역", "크기", "시작", "끝", "상태"])
         self.memory_table.horizontalHeader().setStretchLastSection(True)
         self.memory_table.setAlternatingRowColors(True)
         self.memory_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.region_table = QTableWidget(0, 8)
+        self.region_table = SortableTable(0, 8)
         self.region_table.setHorizontalHeaderLabels(["Type", "Region / Placement", "Rule", "Start", "End", "Size / Usage", "Used", "Free"])
         self.region_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.region_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -207,7 +261,7 @@ class IarMapAnalyzerWidget(QWidget):
         self.region_splitter.setStretchFactor(0, 15)
         self.region_splitter.setStretchFactor(1, 35)
         self.region_splitter.setSizes([300, 700])
-        self.symbol_table = QTableWidget(0, 7)
+        self.symbol_table = SortableTable(0, 7)
         self.symbol_table.setHorizontalHeaderLabels(["Kind", "Name", "Start", "Size", "End", "Object", "Section / Region"])
         self.symbol_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.symbol_table.setSortingEnabled(True)
@@ -217,7 +271,7 @@ class IarMapAnalyzerWidget(QWidget):
         self._raw_text = QPlainTextEdit()
         self._raw_text.setReadOnly(True)
         self._raw_text.setFont(QFont("Cascadia Mono", 9))
-        self._stack_table = QTableWidget(0, 3)
+        self._stack_table = SortableTable(0, 3)
         self._stack_table.setHorizontalHeaderLabels(["Call Graph Root", "Max Use", "Total Use"])
         self._stack_table.horizontalHeader().setStretchLastSection(True)
         self._stack_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -348,6 +402,13 @@ class IarMapAnalyzerWidget(QWidget):
     def _percent(used: int, total: int) -> str:
         return f"{(used * 100 / total):.1f}%" if total else "-"
 
+    @staticmethod
+    def _cell(text: str, sort_key=None) -> QTableWidgetItem:
+        item = _SortableItem(text)
+        if sort_key is not None:
+            item.setData(Qt.UserRole + 1, sort_key)
+        return item
+
     def _display(self, a: MapAnalysis) -> None:
         flash_total = a.flash.size
         sram_total = a.sram.size
@@ -400,8 +461,9 @@ class IarMapAnalyzerWidget(QWidget):
             row = self.symbol_table.rowCount()
             self.symbol_table.insertRow(row)
             values = [symbol.kind, symbol.name, f"0x{symbol.start:08X}", self._fmt(symbol.size), f"0x{symbol.end:08X}", symbol.object_file, f"{symbol.section or '-'} / {symbol.region or 'Unmapped'}"]
+            sort_keys = [None, None, symbol.start, symbol.size, symbol.end, None, None]
             for col, value in enumerate(values):
-                self.symbol_table.setItem(row, col, QTableWidgetItem(value))
+                self.symbol_table.setItem(row, col, self._cell(value, sort_keys[col]))
         self.symbol_table.setSortingEnabled(True)
 
     def _populate_regions(self, regions, filter_name: str) -> None:
@@ -412,8 +474,10 @@ class IarMapAnalyzerWidget(QWidget):
             row = self.region_table.rowCount()
             self.region_table.insertRow(row)
             values = [region.category, region.name, region.rule, f"0x{region.start:08X}", f"0x{region.end:08X}", f"{self._fmt(region.size)} · {self._percent(region.used, region.size)}", self._fmt(region.used), self._fmt(max(0, region.size - region.used))]
+            values[1] = region.display_name
+            sort_keys = [None, None, None, region.start, region.end, region.size, region.used, max(0, region.size - region.used)]
             for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
+                item = self._cell(value, sort_keys[col])
                 if col == 1:
                     item.setData(Qt.UserRole, region.name)
                 self.region_table.setItem(row, col, item)

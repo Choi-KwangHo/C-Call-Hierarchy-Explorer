@@ -86,6 +86,18 @@ classb_status 0x2000'0400 0x4 Data stm32fxx_STLstartup.o [1]
             self.assertEqual(function.region, "SAFETY_ROM_region")
             self.assertEqual(function.end, 0x08005A56)
 
+    def test_vector_region_uses_icf_block_name_and_linked_core_handlers(self) -> None:
+        result = parse_map_text("""
+"P1": place in [from 0x08003000 to 0x08003FFF] { first block INTVEC };
+Reset_Handler 0x08012000 0x20 Code startup.o [1]
+NMI_Handler 0x08012020 0x08 Code startup.o [1]
+HardFault_Handler 0x08012028 0x08 Code startup.o [1]
+""")
+        vector_region = next(region for region in result.regions if region.name == "P1")
+        self.assertEqual(vector_region.display_name, "INTVEC [P1]")
+        vector_names = [item.name for item in result.placement_symbols if item.region == "P1"]
+        self.assertEqual(vector_names[1:4], ["Reset_Handler", "NMI_Handler", "HardFault_Handler"])
+
     def test_main_workspace_exposes_integrated_analysis_tabs(self) -> None:
         from PySide6.QtWidgets import QApplication
         from app import MainWindow
