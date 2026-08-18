@@ -162,11 +162,19 @@ def _signature(path: Path) -> str:
 
 
 def _summary(text: str, label: str) -> int:
-    pattern = re.compile(
-        rf"{label}\s*[:=]?\s*(?:\([^)]*\))?\s*(?P<size>(?:0x)?[0-9A-Fa-f][0-9A-Fa-f',]*(?:\.\d+)?\s*(?:K|KB|M|MB)?)",
+    size = r"(?:0x)?[0-9A-Fa-f][0-9A-Fa-f',]*(?:\.\d+)?\s*(?:K|KB|M|MB)?"
+    # IAR's canonical footer puts the quantity before the description:
+    # "96'578 bytes of readonly code memory".  Looking only after the
+    # description crossed into the next summary line and shifted every value.
+    before = re.compile(rf"(?P<size>{size})\s+bytes?\s+of\s+{label}\b", re.I)
+    match = before.search(text)
+    if match:
+        return parse_size(match.group("size"))
+    after = re.compile(
+        rf"{label}[^\r\n]*?[:=]?\s*(?:\([^)]*\))?\s*(?P<size>{size})",
         re.I,
     )
-    match = pattern.search(text)
+    match = after.search(text)
     return parse_size(match.group("size")) if match else 0
 
 
@@ -201,6 +209,14 @@ def _block_definition(text: str, name: str) -> int:
 
 
 def _place(text: str, name: str) -> MemoryRange:
+    block = re.search(
+        rf"^\s*{re.escape(name)}\s+({HEX_RE})\s+(?:{HEX_RE}|\d+)\s+({HEX_RE}|\d+[\d',]*(?:\s*(?:K|KB|M|MB))?)\s+<Block>",
+        text,
+        re.I | re.M,
+    )
+    if block:
+        start, size = _num(block.group(1)), parse_size(block.group(2))
+        return MemoryRange(name, start, start + max(0, size - 1), size, True, block.group(0).strip())
     match = re.search(
         rf"{re.escape(name)}[^\r\n]*?(?:at|from)\s+({HEX_RE})(?:\s+to\s+({HEX_RE}))?",
         text,
@@ -451,6 +467,31 @@ def _validate_selected_mcu(result: MapAnalysis) -> None:
         result.warnings.append(f"MCU SRAM capacity mismatch: expected {sram_expected:,} B, MAP {result.sram.size:,} B.")
 
 
+def _apply_mcu_capacity(result: MapAnalysis) -> None:
+    """Use the confirmed device capacity, never a linker placement fragment."""
+    capacity = {"STM32F103VCT6": (256 * 1024, 48 * 1024)}.get(result.mcu_hint)
+    if not capacity:
+        return
+    flash_size, sram_size = capacity
+    result.flash = MemoryRange(
+        "Flash", 0x08000000, 0x08000000 + flash_size - 1, flash_size, True,
+        f"MCU {result.mcu_hint} physical Flash capacity",
+    )
+    result.sram = MemoryRange(
+        "SRAM", 0x20000000, 0x20000000 + sram_size - 1, sram_size, True,
+        f"MCU {result.mcu_hint} physical SRAM capacity",
+    )
+    for region in result.regions:
+        if 0x08000000 <= region.start < 0x10000000 and region.end > result.flash.end:
+            result.warnings.append(f"ROM region {region.name} exceeds the confirmed MCU Flash range.")
+        if 0x20000000 <= region.start < 0x30000000 and region.end > result.sram.end:
+            result.warnings.append(f"RAM region {region.name} exceeds the confirmed MCU SRAM range.")
+    if result.flash_used > result.flash.size:
+        result.warnings.append("Readonly code/data total exceeds the confirmed MCU Flash capacity.")
+    if result.readwrite_data > result.sram.size:
+        result.warnings.append("Readwrite data total exceeds the confirmed MCU SRAM capacity.")
+
+
 def parse_map_text(text: str, path: str = "") -> MapAnalysis:
     file_path = Path(path) if path else Path("unknown.map")
     result = MapAnalysis(str(file_path), file_path.name, "")
@@ -458,17 +499,16 @@ def parse_map_text(text: str, path: str = "") -> MapAnalysis:
     result.readonly_code = _summary(text, r"readonly\s+code\s+memory")
     result.readonly_data = _summary(text, r"readonly\s+data\s+memory")
     result.readwrite_data = _summary(text, r"readwrite\s+data\s+memory")
-    result.flash = _range(text, "P5", 0x08000000, 0x0807FFFF)
-    result.sram = _range(text, "P6", 0x20000000, 0x2000FFFF)
-    # IAR names physical regions P5/P6 differently between linker files.
-    # Classify by address rather than assuming P5=Flash/P6=SRAM.
-    if result.flash.found and result.sram.found:
-        p5_is_sram = 0x20000000 <= result.flash.start < 0x30000000
-        p6_is_flash = 0x08000000 <= result.sram.start < 0x10000000
-        if p5_is_sram and p6_is_flash:
-            result.flash, result.sram = result.sram, result.flash
-            result.flash.name = "Flash"
-            result.sram.name = "SRAM"
+    p5 = _range(text, "P5", 0, 0)
+    p6 = _range(text, "P6", 0, 0)
+    # P5/P6 are linker placement IDs, not guaranteed physical memories. Only
+    # use an ID provisionally when its address space matches the memory type.
+    flash_candidate = next((item for item in (p5, p6) if 0x08000000 <= item.start < 0x10000000), None)
+    sram_candidate = next((item for item in (p5, p6) if 0x20000000 <= item.start < 0x30000000), None)
+    result.flash = flash_candidate or MemoryRange("Flash", 0x08000000, 0x0807FFFF, 0x80000)
+    result.sram = sram_candidate or MemoryRange("SRAM", 0x20000000, 0x2000FFFF, 0x10000)
+    result.flash.name = "Flash"
+    result.sram.name = "SRAM"
     result.stack_bottom = _place(text, "STACK_BOTTOM_B")
     result.cstack = _place(text, "CSTACK")
     result.heap = _place(text, "HEAP")
@@ -497,13 +537,13 @@ def parse_map_text(text: str, path: str = "") -> MapAnalysis:
     if result.mcu_hint.startswith("STM32F103") and result.sram.size > 64 * 1024:
         result.warnings.append("SRAM 범위가 STM32F103 계열의 일반 용량을 초과합니다. ICF/프로젝트 MCU 설정을 확인하십시오.")
     result.raw_lines = [line.strip() for line in text.splitlines() if re.search(r"P[56]|STACK|HEAP|memory|MCU|ICF", line, re.I)][:80]
-    if result.readwrite_data and result.sram.size and result.readwrite_data > result.sram.size:
+    if result.flash.found and result.sram.found and result.readwrite_data and result.sram.size and result.readwrite_data > result.sram.size:
         result.warnings.append("readwrite data가 MAP SRAM 범위를 초과합니다.")
     expected = {
         "STM32F103VCT6": (256 * 1024, 48 * 1024),
         "STM32F103VCT": (256 * 1024, 48 * 1024),
     }.get(result.mcu_hint)
-    if expected:
+    if expected and result.flash.found and result.sram.found:
         flash_expected, sram_expected = expected
         if result.flash.size and result.flash.size != flash_expected:
             result.warnings.append(
@@ -594,6 +634,7 @@ def parse_map_file(path: str | Path) -> MapAnalysis:
             _enrich_layout(result, resolved_icf.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             result.warnings.append("ICF file could not be read; placement-only layout is shown.")
+    _apply_mcu_capacity(result)
     _validate_selected_mcu(result)
     result.signature = _signature(file_path)
     return result

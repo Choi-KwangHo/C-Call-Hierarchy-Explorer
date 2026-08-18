@@ -98,6 +98,33 @@ HardFault_Handler 0x08012028 0x08 Code startup.o [1]
         vector_names = [item.name for item in result.placement_symbols if item.region == "P1"]
         self.assertEqual(vector_names[1:4], ["Reset_Handler", "NMI_Handler", "HardFault_Handler"])
 
+    def test_iar_footer_summary_uses_quantity_before_memory_description(self) -> None:
+        result = parse_map_text("""
+  96'578 bytes of readonly  code memory
+   2'494 bytes of readonly  data memory
+  28'504 bytes of readwrite data memory
+""")
+        self.assertEqual(result.readonly_code, 96_578)
+        self.assertEqual(result.readonly_data, 2_494)
+        self.assertEqual(result.readwrite_data, 28_504)
+
+    def test_confirmed_mcu_capacity_is_not_replaced_by_p5_p6_fragments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "board.ioc").write_text("Mcu.CPN=STM32F103VCT6\n", encoding="utf-8")
+            map_file = root / "board.map"
+            map_file.write_text("""
+  96'578 bytes of readonly  code memory
+   2'494 bytes of readonly  data memory
+  28'504 bytes of readwrite data memory
+"P5": place in [from 0x20003400 to 0x20004BFF] { rw };
+"P6": place in [from 0x20000000 to 0x2000001F] { rw };
+""", encoding="utf-8")
+            result = parse_map_file(map_file)
+            self.assertEqual((result.flash.start, result.flash.size), (0x08000000, 256 * 1024))
+            self.assertEqual((result.sram.start, result.sram.size), (0x20000000, 48 * 1024))
+            self.assertEqual(result.flash_used, 99_072)
+
     def test_map_table_sorting_stays_in_qt_and_map_scan_is_deferred_when_inactive(self) -> None:
         from PySide6.QtWidgets import QApplication, QTableWidgetItem
         from iar_map_ui import IarMapAnalyzerWidget, SortableTable
