@@ -12,6 +12,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+def _configure_frozen_dll_search_path() -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    candidates = [bundle_root, bundle_root / "PySide6", bundle_root / "shiboken6"]
+    for directory in candidates:
+        if directory.is_dir() and hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(str(directory))
+    os.environ["PATH"] = os.pathsep.join(
+        [str(directory) for directory in candidates if directory.is_dir()]
+        + [os.environ.get("PATH", "")]
+    )
+
+_configure_frozen_dll_search_path()
+
 from PySide6.QtCore import QEvent, QObject, QProcess, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QFont, QIcon, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
@@ -42,7 +57,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.12"
+APP_VERSION = "2.5.13"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """

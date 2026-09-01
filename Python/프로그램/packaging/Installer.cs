@@ -14,8 +14,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Installer for EmbedForge")]
 [assembly: AssemblyCompany("Call Hierarchy Tools")]
 [assembly: AssemblyProduct("EmbedForge")]
-[assembly: AssemblyVersion("2.5.12.0")]
-[assembly: AssemblyFileVersion("2.5.12.0")]
+[assembly: AssemblyVersion("2.5.13.0")]
+[assembly: AssemblyFileVersion("2.5.13.0")]
 
 namespace CCallHierarchyExplorerSetup
 {
@@ -70,7 +70,7 @@ namespace CCallHierarchyExplorerSetup
     internal sealed class InstallerForm : Form
     {
         private const string AppName = "EmbedForge";
-        private const string AppVersion = "2.5.12";
+        private const string AppVersion = "2.5.13";
         private const string AppId = "EmbedForge";
         private const string ExeName = "EmbedForge.exe";
 

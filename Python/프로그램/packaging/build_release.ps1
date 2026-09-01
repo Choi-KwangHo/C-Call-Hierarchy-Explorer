@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "EmbedForge"
-$appVersion = "2.5.12"
+$appVersion = "2.5.13"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -16,6 +16,8 @@ $releaseRoot = Join-Path (Split-Path $projectRoot -Parent) $distributionFolderNa
 $releaseDir = Join-Path $releaseRoot "$appName $appVersion"
 $portableName = "EmbedForge-Portable-$appVersion.exe"
 $portableExe = Join-Path $releaseDir $portableName
+$folderName = "EmbedForge-Portable-Folder-$appVersion.zip"
+$folderZip = Join-Path $releaseDir $folderName
 $setupName = "EmbedForge-Setup-$appVersion.exe"
 $setupExe = Join-Path $releaseDir $setupName
 
@@ -117,6 +119,7 @@ if (Test-Path -LiteralPath $releaseDir) {
 }
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 Copy-Item -LiteralPath $distPortableExe -Destination $portableExe -Force
+Compress-Archive -Path (Join-Path $installedDistDir "*") -DestinationPath $folderZip -CompressionLevel Optimal
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "RELEASE_README.txt") -Destination (Join-Path $releaseDir "README.txt") -Force
 
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -151,9 +154,11 @@ Remove-Item -LiteralPath $payloadZip -Force
 
 $portableHash = (Get-FileHash -LiteralPath $portableExe -Algorithm SHA256).Hash
 $setupHash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash
+$folderHash = (Get-FileHash -LiteralPath $folderZip -Algorithm SHA256).Hash
 $hashText = @"
 $portableHash  $portableName
 $setupHash  $setupName
+$folderHash  $folderName
 "@
 Set-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS.txt") -Value $hashText -Encoding UTF8
 
