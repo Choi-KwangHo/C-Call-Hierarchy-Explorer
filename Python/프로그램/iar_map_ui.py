@@ -137,12 +137,19 @@ class _RegionMap(QWidget):
             for region in group:
                 item_height = minimum + int(distributable * max(region.size, 1) / max(total, 1))
                 item_height = min(item_height, top + height - y)
-                painter.fillRect(x, y, column_width, item_height, QColor(self.COLORS.get(region.category, "#667784")))
+                base_color = QColor(self.COLORS.get(region.category, "#667784"))
+                # Keep the whole allocation visible: the darker portion is
+                # used bytes and the lighter same-family color is free space.
+                painter.fillRect(x, y, column_width, item_height, base_color.lighter(165))
+                ratio = min(1.0, max(0.0, region.used / region.size)) if region.size else 0.0
+                used_width = max(1 if region.used else 0, int(column_width * ratio))
+                painter.fillRect(x, y, used_width, item_height, base_color)
                 painter.setPen(QPen(QColor("#D9E4E8")))
                 painter.drawRect(x, y, column_width, item_height)
-                label = f"{region.display_name}\\n0x{region.start:08X}  ·  {region.size:,} B"
+                percent = (region.used * 100 / region.size) if region.size else 0.0
+                label = f"{region.display_name}\\n{region.used:,} / {region.size:,} B  ·  {percent:.1f}%"
                 if item_height < 42:
-                    label = f"{region.display_name}  ·  {region.size:,} B"
+                    label = f"{region.display_name}  ·  {percent:.1f}%"
                 painter.drawText(x + 6, y + 2, column_width - 12, max(18, item_height - 4), Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, label)
                 self._rectangles.append((x, y, x + column_width, y + item_height, region.name))
                 y += item_height

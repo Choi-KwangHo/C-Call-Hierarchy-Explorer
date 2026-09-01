@@ -10,12 +10,12 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyTitle("C Call Hierarchy Explorer Setup")]
-[assembly: AssemblyDescription("Installer for C Call Hierarchy Explorer")]
+[assembly: AssemblyTitle("EmbedForge Setup")]
+[assembly: AssemblyDescription("Installer for EmbedForge")]
 [assembly: AssemblyCompany("Call Hierarchy Tools")]
-[assembly: AssemblyProduct("C Call Hierarchy Explorer")]
-[assembly: AssemblyVersion("1.5.11.0")]
-[assembly: AssemblyFileVersion("1.5.11.0")]
+[assembly: AssemblyProduct("EmbedForge")]
+[assembly: AssemblyVersion("2.5.12.0")]
+[assembly: AssemblyFileVersion("2.5.12.0")]
 
 namespace CCallHierarchyExplorerSetup
 {
@@ -69,10 +69,10 @@ namespace CCallHierarchyExplorerSetup
 
     internal sealed class InstallerForm : Form
     {
-        private const string AppName = "C Call Hierarchy Explorer";
-        private const string AppVersion = "1.5.11";
-        private const string AppId = "CCallHierarchyExplorer";
-        private const string ExeName = "C Call Hierarchy Explorer.exe";
+        private const string AppName = "EmbedForge";
+        private const string AppVersion = "2.5.12";
+        private const string AppId = "EmbedForge";
+        private const string ExeName = "EmbedForge.exe";
 
         private readonly Label status;
         private readonly ProgressBar progress;

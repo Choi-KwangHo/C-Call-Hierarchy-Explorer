@@ -55,20 +55,20 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
-          $source = "Python/배포/C Call Hierarchy Explorer $version"
+          $source = "Python/배포/EmbedForge $version"
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
-          Copy-Item -LiteralPath "$source/C-Call-Hierarchy-Explorer-Setup-$version.exe" -Destination release-assets
-          Copy-Item -LiteralPath "$source/C-Call-Hierarchy-Explorer-Portable-$version.exe" -Destination release-assets
+          Copy-Item -LiteralPath "$source/EmbedForge-Setup-$version.exe" -Destination release-assets
+          Copy-Item -LiteralPath "$source/EmbedForge-Portable-$version.exe" -Destination release-assets
           Copy-Item -LiteralPath "$source/SHA256SUMS.txt" -Destination release-assets
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: C Call Hierarchy Explorer ${{ github.ref_name }}
+          name: EmbedForge ${{ github.ref_name }}
           generate_release_notes: true
           make_latest: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/C-Call-Hierarchy-Explorer-Setup-*.exe
-            release-assets/C-Call-Hierarchy-Explorer-Portable-*.exe
+            release-assets/EmbedForge-Setup-*.exe
+            release-assets/EmbedForge-Portable-*.exe
             release-assets/SHA256SUMS.txt

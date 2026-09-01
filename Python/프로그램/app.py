@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import sys
+import os
 import traceback
 import re
 import html
@@ -29,6 +30,7 @@ from eeprom_ui import CDeclarationHighlighter, EepromMapDialog
 from iar_map_ui import IarMapAnalyzerWidget
 from iar_migration_ui import IarProjectMigrationDialog
 from iar_debug_settings_ui import IarDebugSettingsDialog
+from github_repository_ui import GitHubRepositoryDialog
 from theme import apply_application_dark_theme
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
@@ -39,8 +41,8 @@ from update_service import (
 from window_state import apply_dark_title_bar, restore_window_state, save_window_state
 
 
-APP_NAME = "C Call Hierarchy Explorer"
-APP_VERSION = "1.5.11"
+APP_NAME = "EmbedForge"
+APP_VERSION = "2.5.12"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -490,6 +492,10 @@ class MainWindow(QMainWindow):
         iar_migration_action = QAction("IAR 프로젝트 복제…", self)
         iar_migration_action.triggered.connect(self._open_iar_migration)
         tools_menu.addAction(iar_migration_action)
+        tools_menu.addSeparator()
+        github_repository_action = QAction("GitHub Repository 생성/최초 업로드…", self)
+        github_repository_action.triggered.connect(self._open_github_repository)
+        tools_menu.addAction(github_repository_action)
 
         self.toolbar = QToolBar("주 도구", self)
         self.toolbar.setMovable(False)
@@ -701,6 +707,10 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         self._open_folder(folder)
+
+    def _open_github_repository(self) -> None:
+        current_root = self.session.root or ""
+        GitHubRepositoryDialog(current_root, self).exec()
 
     def _project_settings_group(self, root: str) -> str:
         return f"projects/{self.cache_store.path_for(root).stem}"
@@ -1862,13 +1872,21 @@ def main() -> int:
             QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(settings_directory))
             source = Path(temporary) / "main.c"
             source.write_text("void child(void){}\nint main(void){child();}\n", encoding="utf-8")
-            result = AnalyzerSession().initial_scan(temporary)
-            view = build_call_view(result)
-            if not result.functions or view.max_depth < 2:
-                return 2
-            window = MainWindow()
-            window.close()
-        return 0
+            session = AnalyzerSession()
+            try:
+                result = session.initial_scan(temporary)
+                view = build_call_view(result)
+                if not result.functions or view.max_depth < 2:
+                    return 2
+            finally:
+                # The packaged smoke process must release Qt worker threads
+                # before returning; otherwise PySide keeps the EXE alive.
+                session.pool.clear()
+                session.cache_pool.clear()
+                session.update_pool.clear()
+        # Native Qt/clang workers can keep handles alive after this
+        # non-GUI smoke path; terminate explicitly for package validation.
+        os._exit(0)
     window = MainWindow()
     window.show()
     return app.exec()
