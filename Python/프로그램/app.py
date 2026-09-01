@@ -16,7 +16,8 @@ def _configure_frozen_dll_search_path() -> None:
     if not getattr(sys, "frozen", False):
         return
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    candidates = [bundle_root, bundle_root / "PySide6", bundle_root / "shiboken6"]
+    pyside_root = bundle_root / "PySide6"
+    candidates = [pyside_root, bundle_root / "shiboken6", bundle_root]
     for directory in candidates:
         if directory.is_dir() and hasattr(os, "add_dll_directory"):
             os.add_dll_directory(str(directory))
@@ -24,6 +25,8 @@ def _configure_frozen_dll_search_path() -> None:
         [str(directory) for directory in candidates if directory.is_dir()]
         + [os.environ.get("PATH", "")]
     )
+    os.environ["QT_PLUGIN_PATH"] = str(pyside_root / "plugins")
+    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(pyside_root / "plugins" / "platforms")
 
 _configure_frozen_dll_search_path()
 
@@ -57,7 +60,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.15"
+APP_VERSION = "2.5.16"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
