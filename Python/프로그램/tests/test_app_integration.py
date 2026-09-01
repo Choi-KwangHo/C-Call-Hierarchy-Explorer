@@ -240,7 +240,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "2.5.13")
+        self.assertEqual(APP_VERSION, "2.5.15")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:

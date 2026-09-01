@@ -14,8 +14,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Installer for EmbedForge")]
 [assembly: AssemblyCompany("Call Hierarchy Tools")]
 [assembly: AssemblyProduct("EmbedForge")]
-[assembly: AssemblyVersion("2.5.13.0")]
-[assembly: AssemblyFileVersion("2.5.13.0")]
+[assembly: AssemblyVersion("2.5.15.0")]
+[assembly: AssemblyFileVersion("2.5.15.0")]
 
 namespace CCallHierarchyExplorerSetup
 {
@@ -70,7 +70,7 @@ namespace CCallHierarchyExplorerSetup
     internal sealed class InstallerForm : Form
     {
         private const string AppName = "EmbedForge";
-        private const string AppVersion = "2.5.13";
+        private const string AppVersion = "2.5.15";
         private const string AppId = "EmbedForge";
         private const string ExeName = "EmbedForge.exe";
 
@@ -246,8 +246,12 @@ namespace CCallHierarchyExplorerSetup
         {
             string executable = Path.Combine(stagingDir, ExeName);
             string pythonDll = Path.Combine(stagingDir, "_internal", "python312.dll");
+            string qtCoreDll = Path.Combine(stagingDir, "_internal", "PySide6", "Qt6Core.dll");
+            string qtPlatform = Path.Combine(stagingDir, "_internal", "PySide6", "plugins", "platforms", "qwindows.dll");
             if (!File.Exists(executable)) throw new IOException("새 버전 실행 파일이 설치 패키지에 없습니다.");
             if (!File.Exists(pythonDll)) throw new IOException("새 버전 Python 런타임 DLL이 설치 패키지에 없습니다.");
+            if (!File.Exists(qtCoreDll)) throw new IOException("Qt6Core.dll이 설치 패키지에 없습니다.");
+            if (!File.Exists(qtPlatform)) throw new IOException("Qt Windows 플랫폼 플러그인이 설치 패키지에 없습니다.");
         }
 
         private void WaitForPreviousProcessExit(bool required)

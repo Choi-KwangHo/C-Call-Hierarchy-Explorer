@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "EmbedForge"
-$appVersion = "2.5.13"
+$appVersion = "2.5.15"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -74,6 +74,8 @@ try {
         --add-data "eeprom_sources.json;." `
         --collect-all tree_sitter_c `
         --collect-all clang `
+        --collect-binaries PySide6 `
+        --collect-binaries shiboken6 `
         app.py
     if ($LASTEXITCODE -ne 0) { throw "Installed application build failed." }
 
@@ -90,6 +92,8 @@ try {
         --add-data "eeprom_sources.json;." `
         --collect-all tree_sitter_c `
         --collect-all clang `
+        --collect-binaries PySide6 `
+        --collect-binaries shiboken6 `
         app.py
     if ($LASTEXITCODE -ne 0) { throw "Portable application build failed." }
 } finally {
