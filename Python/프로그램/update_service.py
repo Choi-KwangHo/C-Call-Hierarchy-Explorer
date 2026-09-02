@@ -23,6 +23,10 @@ LATEST_RELEASE_API = (
 RELEASE_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/latest"
 RELEASE_FEED = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases.atom"
 USER_AGENT = f"{GITHUB_REPOSITORY}-Updater"
+SETUP_NAME_TEMPLATES = (
+    "EmbedForge-Setup-{version}.exe",
+    "C-Call-Hierarchy-Explorer-Setup-{version}.exe",
+)
 
 
 class UpdateError(RuntimeError):
@@ -86,18 +90,25 @@ def _asset_from_json(value: dict) -> ReleaseAsset:
     return ReleaseAsset(name=name, url=url, size=size, sha256=digest.split(":", 1)[1].lower())
 
 
+def setup_asset_names(version: str) -> tuple[str, ...]:
+    return tuple(template.format(version=version) for template in SETUP_NAME_TEMPLATES)
+
+
 def parse_release(payload: dict) -> ReleaseInfo:
     if payload.get("draft") or payload.get("prerelease"):
         raise UpdateError("정식 최신 릴리스가 아닙니다.")
     tag = str(payload.get("tag_name") or "")
     version = ".".join(str(part) for part in version_tuple(tag))
-    expected = f"c-call-hierarchy-explorer-setup-{version}.exe".lower()
+    expected_names = setup_asset_names(version)
+    assets_by_name = {
+        str(item.get("name", "")).casefold(): item for item in payload.get("assets", [])
+    }
     setup_json = next(
-        (item for item in payload.get("assets", []) if str(item.get("name", "")).lower() == expected),
+        (assets_by_name[name.casefold()] for name in expected_names if name.casefold() in assets_by_name),
         None,
     )
     if setup_json is None:
-        raise UpdateError(f"설치 업데이트 파일을 찾지 못했습니다: {expected}")
+        raise UpdateError(f"설치 업데이트 파일을 찾지 못했습니다: {', '.join(expected_names)}")
     page_url = str(payload.get("html_url") or "")
     if not _trusted_https(page_url):
         raise UpdateError("릴리스 페이지 주소가 올바르지 않습니다.")
@@ -154,7 +165,7 @@ def fetch_latest_release_from_feed(timeout: float = 15.0) -> ReleaseInfo:
             version, tag, title, metadata = parse_release_feed(response.read())
         published_at, _, notes = metadata.partition("\n")
 
-        setup_name = f"C-Call-Hierarchy-Explorer-Setup-{version}.exe"
+        setup_names = setup_asset_names(version)
         asset_base = (
             f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases/download/{tag}"
         )
@@ -163,7 +174,21 @@ def fetch_latest_release_from_feed(timeout: float = 15.0) -> ReleaseInfo:
             headers={"User-Agent": USER_AGENT},
         )
         with urllib.request.urlopen(checksum_request, timeout=timeout) as response:
-            digest = parse_checksum_manifest(response.read().decode("utf-8-sig"), setup_name)
+            manifest = response.read().decode("utf-8-sig")
+        setup_name = ""
+        digest = ""
+        for candidate in setup_names:
+            try:
+                digest = parse_checksum_manifest(manifest, candidate)
+                setup_name = candidate
+                break
+            except UpdateError:
+                continue
+        if not setup_name:
+            raise UpdateError(
+                "SHA256SUMS.txt에서 설치 파일 검증값을 찾지 못했습니다: "
+                + ", ".join(setup_names)
+            )
 
         setup_url = f"{asset_base}/{setup_name}"
         setup_request = urllib.request.Request(
@@ -221,7 +246,7 @@ def fetch_latest_release_from_api(timeout: float = 15.0) -> ReleaseInfo:
 
 def update_download_directory() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
-    return base / "C Call Hierarchy Explorer" / "updates"
+    return base / "EmbedForge" / "updates"
 
 
 def verify_downloaded_asset(path: str | Path, expected_size: int, expected_sha256: str) -> Path:

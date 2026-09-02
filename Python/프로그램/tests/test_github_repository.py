@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from github_repository import GitHubRepositoryError, RepositoryRequest, detect_iar_projects, iter_upload_files
+from github_repository import GitHubClient, GitHubRepositoryError, RepositoryRequest, detect_iar_projects, iter_upload_files
 
 
 class GitHubRepositoryTests(unittest.TestCase):
@@ -39,7 +39,24 @@ class GitHubRepositoryTests(unittest.TestCase):
     def test_user_dashboard_is_supported(self):
         request = RepositoryRequest("https://github.com/Choi-KwangHo", "demo")
         self.assertEqual(request.owner, "Choi-KwangHo")
-        self.assertEqual(request.owner_endpoint, "/users/")
+        self.assertEqual(request.owner_endpoint, "/user")
+        self.assertFalse(request.is_organization)
+
+    def test_personal_dashboard_uses_authenticated_user_creation_endpoint(self):
+        request = RepositoryRequest("https://github.com/Choi-KwangHo", "demo")
+        client = GitHubClient("test-token", api_base="https://example.invalid")
+        calls = []
+        client._request = lambda method, path, payload=None: calls.append((method, path, payload)) or {"html_url": "https://github.com/Choi-KwangHo/demo"}
+        client.create_repository(request)
+        self.assertEqual(calls[0][0:2], ("POST", "/user/repos"))
+
+    def test_organization_dashboard_uses_organization_creation_endpoint(self):
+        request = RepositoryRequest("https://github.com/orgs/Esol-Lab", "demo")
+        client = GitHubClient("test-token", api_base="https://example.invalid")
+        calls = []
+        client._request = lambda method, path, payload=None: calls.append((method, path, payload)) or {"html_url": "https://github.com/Esol-Lab/demo"}
+        client.create_repository(request)
+        self.assertEqual(calls[0][0:2], ("POST", "/orgs/Esol-Lab/repos"))
 
 
 if __name__ == "__main__":

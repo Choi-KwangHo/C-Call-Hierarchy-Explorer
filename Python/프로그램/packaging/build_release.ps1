@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "EmbedForge"
-$appVersion = "2.5.20"
+$appVersion = "2.5.22"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -103,14 +103,48 @@ try {
     $env:PATH = $originalBuildPath
 }
 
-$wrongIcu = Join-Path $installedDistDir "_internal\icuuc.dll"
-if (Test-Path -LiteralPath $wrongIcu) {
-    throw "Incompatible external ICU DLL was bundled: $wrongIcu"
+# PyInstaller's dependency scan can still discover Poppler's unversioned ICU
+# binaries through the host process even after PATH is filtered.  Qt 6.10 does
+# not need those external Poppler copies, and their ICU 78 ABI causes QtCore to
+# fail before the application starts.  Remove only these exact foreign files
+# from the staged bundle, then assert that neither remains.
+foreach ($foreignIcuName in @("icuuc.dll", "icudt78.dll")) {
+    $foreignIcu = Join-Path $installedDistDir "_internal\\$foreignIcuName"
+    if (Test-Path -LiteralPath $foreignIcu) {
+        Remove-Item -LiteralPath $foreignIcu -Force
+    }
+}
+foreach ($foreignIcuName in @("icuuc.dll", "icudt78.dll")) {
+    $foreignIcu = Join-Path $installedDistDir "_internal\\$foreignIcuName"
+    if (Test-Path -LiteralPath $foreignIcu) {
+        throw "Incompatible external ICU DLL remains in bundle: $foreignIcu"
+    }
 }
 
-# Source-level smoke tests run before packaging. The frozen Qt/clang process can
-# retain native handles on some Windows hosts, so do not block artifact creation
-# on an executable smoke process; validate the produced files and version data.
+# This is a release gate, not a best-effort diagnostic: run the exact frozen
+# executable and require the marker written only after QtCore import succeeds.
+$qtDiagnostic = Join-Path $env:TEMP "EmbedForge-dll-diagnostic.log"
+Remove-Item -LiteralPath $qtDiagnostic -Force -ErrorAction SilentlyContinue
+$smoke = Start-Process -FilePath $installedDistExe -ArgumentList "--smoke-test" -PassThru
+$smokeDeadline = (Get-Date).AddSeconds(15)
+$qtImported = $false
+while ((Get-Date) -lt $smokeDeadline) {
+    if ((Test-Path -LiteralPath $qtDiagnostic) -and (Select-String -LiteralPath $qtDiagnostic -SimpleMatch "qt_import=success" -Quiet)) {
+        $qtImported = $true
+        break
+    }
+    if ($smoke.HasExited) { break }
+    Start-Sleep -Milliseconds 250
+    $smoke.Refresh()
+}
+if (-not $qtImported) {
+    if (-not $smoke.HasExited) { Stop-Process -Id $smoke.Id -Force }
+    throw "Frozen application did not confirm a successful QtCore import."
+}
+# Some Qt/clang hosts retain native worker handles after the smoke path.  The
+# successful import marker is the intended release criterion; stop a lingering
+# test process so it cannot contaminate the packaging transaction.
+if (-not $smoke.HasExited) { Stop-Process -Id $smoke.Id -Force }
 
 if (Test-Path -LiteralPath $payloadZip) {
     Remove-Item -LiteralPath $payloadZip -Force

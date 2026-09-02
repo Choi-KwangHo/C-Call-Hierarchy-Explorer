@@ -40,7 +40,17 @@ class RepositoryRequest:
 
     @property
     def owner_endpoint(self) -> str:
-        return "/orgs/" if "/orgs/" in self.dashboard_url.casefold() else "/users/"
+        """Return the repository-creation endpoint for this dashboard.
+
+        GitHub only permits repository creation for a personal account through
+        ``POST /user/repos``.  ``/users/{login}/repos`` is a read-only listing
+        endpoint and previously caused the misleading HTTP 404 shown to users.
+        """
+        return "/orgs/" if "/orgs/" in self.dashboard_url.casefold() else "/user"
+
+    @property
+    def is_organization(self) -> bool:
+        return self.owner_endpoint == "/orgs/"
 
     def validate(self) -> None:
         self.owner
@@ -122,7 +132,18 @@ class GitHubClient:
             with urlopen(request, timeout=30) as response:
                 raw = response.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
-        except (HTTPError, URLError, json.JSONDecodeError) as error:
+        except HTTPError as error:
+            detail = ""
+            try:
+                payload = json.loads(error.read().decode("utf-8"))
+                detail = str(payload.get("message", "")).strip()
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            message = f"GitHub 요청 실패: HTTP {error.code}"
+            if detail:
+                message += f" · {detail}"
+            raise GitHubRepositoryError(message) from error
+        except (URLError, json.JSONDecodeError) as error:
             raise GitHubRepositoryError(f"GitHub 요청 실패: {error}") from error
 
     def create_repository(self, request: RepositoryRequest) -> dict:
@@ -132,7 +153,20 @@ class GitHubClient:
             payload["gitignore_template"] = request.gitignore_template
         if request.license_template:
             payload["license_template"] = request.license_template
-        return self._request("POST", f"{request.owner_endpoint}{request.owner}/repos", payload)
+        path = f"/orgs/{request.owner}/repos" if request.is_organization else "/user/repos"
+        try:
+            return self._request("POST", path, payload)
+        except GitHubRepositoryError as error:
+            if "HTTP 404" in str(error):
+                target = f"조직 '{request.owner}'" if request.is_organization else "개인 계정"
+                raise GitHubRepositoryError(
+                    f"{error}\n\n"
+                    f"대상: {target}\n"
+                    "확인: Dashboard 주소 유형, 토큰의 Administration: Write 권한, "
+                    "조직의 Fine-grained 토큰 승인 상태를 확인하십시오. "
+                    "Classic 토큰은 필수가 아닙니다."
+                ) from error
+            raise
 
     def upload_file(self, owner: str, repository: str, relative_path: str, source: Path, message: str = "Initial IAR project upload") -> dict:
         encoded = base64.b64encode(source.read_bytes()).decode("ascii")

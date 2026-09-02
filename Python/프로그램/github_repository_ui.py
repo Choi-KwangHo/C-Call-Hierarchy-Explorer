@@ -13,12 +13,13 @@ class GitHubRepositoryDialog(QDialog):
     def __init__(self, current_root: str = "", parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("GitHub Repository 생성 및 IAR 업로드")
-        self.resize(620, 360)
+        self.resize(660, 390)
         self.dashboard = QLineEdit("https://github.com/orgs/Esol-Lab")
         self.name = QLineEdit()
         self.description = QLineEdit()
         self.token = QLineEdit()
         self.token.setEchoMode(QLineEdit.Password)
+        self.token.setPlaceholderText("Classic: repo 범위 / Fine-grained: Administration 쓰기")
         self.root = QLineEdit(current_root)
         browse = QPushButton("폴더 선택…")
         browse.clicked.connect(self._choose_root)
@@ -39,7 +40,14 @@ class GitHubRepositoryDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Repository 생성")
         buttons.accepted.connect(self._create)
         buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self); layout.addWidget(QLabel("Repository 생성 후, 폴더가 지정된 경우 최초 코드 업로드를 선택할 수 있습니다.")); layout.addLayout(form); layout.addWidget(buttons)
+        guidance = QLabel(
+            "개인 Dashboard(https://github.com/계정)는 개인 저장소로, "
+            "조직 Dashboard(https://github.com/orgs/조직)는 조직 저장소로 생성됩니다.\n"
+            "Fine-grained 토큰도 사용할 수 있으며 Administration: Write 권한과 조직 승인이 필요합니다."
+        )
+        guidance.setWordWrap(True)
+        guidance.setStyleSheet("color:#AFC0CA;")
+        layout = QVBoxLayout(self); layout.addWidget(QLabel("Repository 생성 후, 폴더가 지정된 경우 최초 코드 업로드를 선택할 수 있습니다.")); layout.addWidget(guidance); layout.addLayout(form); layout.addWidget(buttons)
 
     def _choose_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "IAR 프로젝트 폴더 선택", self.root.text())

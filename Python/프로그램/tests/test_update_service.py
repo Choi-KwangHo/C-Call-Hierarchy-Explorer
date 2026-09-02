@@ -32,7 +32,7 @@ def release_payload(content: bytes = b"setup-data") -> dict:
         "prerelease": False,
         "assets": [
             {
-                "name": "C-Call-Hierarchy-Explorer-Setup-1.1.8.exe",
+                "name": "EmbedForge-Setup-1.1.8.exe",
                 "browser_download_url": "https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/download/v1.1.8/setup.exe",
                 "size": len(content),
                 "digest": f"sha256:{digest}",
@@ -55,7 +55,7 @@ class UpdateServiceTests(unittest.TestCase):
         version, tag, title, metadata = parse_release_feed(feed)
         self.assertEqual((version, tag, title), ("1.1.16", "v1.1.16", "latest"))
         self.assertIn("notes", metadata)
-        name = "C-Call-Hierarchy-Explorer-Setup-1.1.16.exe"
+        name = "EmbedForge-Setup-1.1.16.exe"
         digest = "a" * 64
         self.assertEqual(parse_checksum_manifest(f"{digest}  {name}\n", name), digest)
 
@@ -66,7 +66,7 @@ class UpdateServiceTests(unittest.TestCase):
           <link href="https://github.com/Choi-KwangHo/C-Call-Hierarchy-Explorer/releases/tag/v1.1.16"/>
           <content type="html">notes</content>
         </entry></feed>"""
-        name = "C-Call-Hierarchy-Explorer-Setup-1.1.16.exe"
+        name = "EmbedForge-Setup-1.1.16.exe"
         digest = "b" * 64
 
         class Response(io.BytesIO):
@@ -99,8 +99,14 @@ class UpdateServiceTests(unittest.TestCase):
     def test_parse_release_selects_signed_setup_asset(self) -> None:
         release = parse_release(release_payload())
         self.assertEqual(release.version, "1.1.8")
-        self.assertEqual(release.setup.name, "C-Call-Hierarchy-Explorer-Setup-1.1.8.exe")
+        self.assertEqual(release.setup.name, "EmbedForge-Setup-1.1.8.exe")
         self.assertEqual(len(release.setup.sha256), 64)
+
+    def test_parse_release_accepts_legacy_setup_asset(self) -> None:
+        payload = release_payload()
+        payload["assets"][0]["name"] = "C-Call-Hierarchy-Explorer-Setup-1.1.8.exe"
+        release = parse_release(payload)
+        self.assertEqual(release.setup.name, "C-Call-Hierarchy-Explorer-Setup-1.1.8.exe")
 
     def test_parse_release_rejects_missing_digest_and_untrusted_url(self) -> None:
         payload = release_payload()

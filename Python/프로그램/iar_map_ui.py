@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
@@ -121,7 +121,7 @@ class _RegionMap(QWidget):
         painter.setPen(QColor("#9EAFBA")); painter.drawText(8, 14, "Address map · minimum height applied")
 
     def _paint_grouped_regions(self, painter: QPainter, shown) -> None:
-        """Draw all regions with legible labels, using two columns when needed."""
+        """Draw a consistent, high-contrast one-line allocation label per region."""
         top, height = 28, max(1, self.height() - 56)
         columns = 2 if len(shown) * 28 > height else 1
         gap, outer_x = 8, 10
@@ -147,14 +147,31 @@ class _RegionMap(QWidget):
                 painter.setPen(QPen(QColor("#D9E4E8")))
                 painter.drawRect(x, y, column_width, item_height)
                 percent = (region.used * 100 / region.size) if region.size else 0.0
-                label = f"{region.display_name}\\n{region.used:,} / {region.size:,} B  ·  {percent:.1f}%"
-                if item_height < 42:
-                    label = f"{region.display_name}  ·  {percent:.1f}%"
-                painter.drawText(x + 6, y + 2, column_width - 12, max(18, item_height - 4), Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap, label)
+                # Every region uses the same one-line grammar.  Small blocks
+                # are elided rather than switching to a different percentage-
+                # only sentence, and literal '\\n' never reaches the canvas.
+                label = (
+                    f"{str(region.display_name).replace('\\\\n', ' ').replace('\\n', ' ').strip()}"
+                    f" · {region.used:,} / {region.size:,} B · {percent:.1f}%"
+                )
+                label_font = QFont(painter.font())
+                label_font.setBold(True)
+                label_font.setPointSize(max(9, min(11, label_font.pointSize() or 10)))
+                painter.setFont(label_font)
+                available_width = max(0, column_width - 14)
+                if available_width >= 48:
+                    visible_label = QFontMetrics(label_font).elidedText(label, Qt.ElideRight, available_width)
+                    # The free portion is intentionally pale, the used portion
+                    # intentionally saturated.  Calculate the text color from
+                    # the background beneath the left-aligned text.
+                    text_background = base_color if used_width >= min(available_width, column_width // 2) else base_color.lighter(165)
+                    luminance = (0.2126 * text_background.red() + 0.7152 * text_background.green() + 0.0722 * text_background.blue()) / 255
+                    painter.setPen(QColor("#111820") if luminance > 0.62 else QColor("#F7FAFC"))
+                    painter.drawText(x + 7, y + 1, available_width, max(18, item_height - 2), Qt.AlignLeft | Qt.AlignVCenter, visible_label)
                 self._rectangles.append((x, y, x + column_width, y + item_height, region.name))
                 y += item_height
         painter.setPen(QColor("#9EAFBA"))
-        painter.drawText(8, 14, "Address map · readable minimum height")
+        painter.drawText(8, 14, "Address map · used / total bytes · utilization")
 
     def mousePressEvent(self, event) -> None:
         for left, top, right, bottom, name in self._rectangles:
