@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "EmbedForge"
-$appVersion = "2.5.17"
+$appVersion = "2.5.18"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"

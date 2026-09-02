@@ -24,6 +24,12 @@ def _configure_frozen_dll_search_path() -> None:
             os.add_dll_directory(str(directory))
     if pyside_root.is_dir() and os.name == "nt":
         ctypes.windll.kernel32.SetDllDirectoryW(str(pyside_root))
+        global _frozen_qt_handles
+        _frozen_qt_handles = []
+        for name in ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll"):
+            path = pyside_root / name
+            if path.is_file():
+                _frozen_qt_handles.append(ctypes.WinDLL(str(path)))
     os.environ["PATH"] = os.pathsep.join(
         [str(directory) for directory in candidates if directory.is_dir()]
         + [os.environ.get("PATH", "")]
@@ -74,7 +80,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.17"
+APP_VERSION = "2.5.18"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
