@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import app as app_module  # noqa: E402
+
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtGui import QDesktopServices, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -44,6 +46,9 @@ class AppIntegrationTests(unittest.TestCase):
             time.sleep(0.01)
         self.app.processEvents()
         self.assertFalse(window.busy, "백그라운드 작업 시간 초과")
+
+    def test_frozen_runtime_uses_pyinstaller_qt_hook(self) -> None:
+        self.assertFalse(hasattr(app_module, "_configure_frozen_dll_search_path"))
 
     def test_manual_update_auto_data_path_and_excel_button(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -240,7 +245,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(shortest.endswith("r.c"))
         self.assertGreaterEqual(window.file_tree.minimumWidth(), metrics.horizontalAdvance(r"..\MMMMMMMMMM") + 48)
         self.assertFalse(window.workspace_splitter.isCollapsible(0))
-        self.assertEqual(APP_VERSION, "2.5.19")
+        self.assertEqual(APP_VERSION, "2.5.20")
         window.close()
 
     def test_vscode_style_project_settings_and_exclusion_normalization(self) -> None:

@@ -5,11 +5,11 @@
       StringTable('040904B0', [
         StringStruct('CompanyName', 'Call Hierarchy Tools'),
         StringStruct('FileDescription', 'EmbedForge'),
-        StringStruct('FileVersion', '2.5.19'),
+        StringStruct('FileVersion', '2.5.20'),
         StringStruct('InternalName', 'EmbedForge'),
         StringStruct('OriginalFilename', 'EmbedForge.exe'),
         StringStruct('ProductName', 'EmbedForge'),
-        StringStruct('ProductVersion', '2.5.19')
+        StringStruct('ProductVersion', '2.5.20')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

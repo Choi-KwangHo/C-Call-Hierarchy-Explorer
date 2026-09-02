@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "EmbedForge"
-$appVersion = "2.5.19"
+$appVersion = "2.5.20"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -59,6 +59,12 @@ if (-not (Test-Path -LiteralPath $python)) {
 & $python (Join-Path $PSScriptRoot "create_icon.py")
 if ($LASTEXITCODE -ne 0) { throw "Icon creation failed." }
 
+$originalBuildPath = $env:PATH
+# Poppler ships an unversioned ICU DLL that PyInstaller can mistake for Qt's
+# Windows ICU dependency. Exclude Poppler only while freezing the application.
+$env:PATH = (($originalBuildPath -split ";") | Where-Object {
+    $_ -and $_ -notmatch "(?i)[\\/]poppler[\\/]"
+}) -join ";"
 Push-Location $projectRoot
 try {
     & $python -m PyInstaller `
@@ -94,6 +100,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Portable application build failed." }
 } finally {
     Pop-Location
+    $env:PATH = $originalBuildPath
+}
+
+$wrongIcu = Join-Path $installedDistDir "_internal\icuuc.dll"
+if (Test-Path -LiteralPath $wrongIcu) {
+    throw "Incompatible external ICU DLL was bundled: $wrongIcu"
 }
 
 # Source-level smoke tests run before packaging. The frozen Qt/clang process can

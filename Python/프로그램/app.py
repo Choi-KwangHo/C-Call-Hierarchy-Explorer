@@ -12,37 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-def _configure_frozen_dll_search_path() -> None:
-    if not getattr(sys, "frozen", False):
-        return
-    bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    pyside_root = bundle_root / "PySide6"
-    candidates = [pyside_root, bundle_root / "shiboken6", bundle_root]
-    for directory in candidates:
-        if directory.is_dir() and hasattr(os, "add_dll_directory"):
-            os.add_dll_directory(str(directory))
-    if pyside_root.is_dir() and os.name == "nt":
-        ctypes.windll.kernel32.SetDllDirectoryW(str(pyside_root))
-    os.environ["PATH"] = os.pathsep.join(
-        [str(directory) for directory in candidates if directory.is_dir()]
-        + [os.environ.get("PATH", "")]
-    )
-    os.environ["QT_PLUGIN_PATH"] = str(pyside_root / "plugins")
-    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(pyside_root / "plugins" / "platforms")
-    try:
-        diagnostic = Path(os.environ.get("TEMP", ".")) / "EmbedForge-dll-diagnostic.log"
-        diagnostic.write_text(
-            "bundle_root=" + str(bundle_root) + "\n"
-            "pyside_root=" + str(pyside_root) + "\n"
-            "qt_plugin_path=" + os.environ["QT_PLUGIN_PATH"] + "\n"
-            "qt_platform_path=" + os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] + "\n",
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
-
-_configure_frozen_dll_search_path()
-
 from PySide6.QtCore import QEvent, QObject, QProcess, QRunnable, QSettings, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QDesktopServices, QFont, QIcon, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
@@ -93,7 +62,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.19"
+APP_VERSION = "2.5.20"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
