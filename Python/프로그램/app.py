@@ -51,6 +51,7 @@ from iar_map_ui import IarMapAnalyzerWidget
 from iar_migration_ui import IarProjectMigrationDialog
 from iar_debug_settings_ui import IarDebugSettingsDialog
 from github_repository_ui import GitHubRepositoryDialog
+from source_encoding_converter_ui import SourceEncodingConverterDialog
 from theme import apply_application_dark_theme
 from virtual_tree import CallTreeWidget
 from xlsx_exporter import export_xlsx
@@ -62,7 +63,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.22"
+APP_VERSION = "2.5.23"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -505,6 +506,9 @@ class MainWindow(QMainWindow):
         iar_map_action.setShortcut("Ctrl+Shift+M")
         iar_map_action.triggered.connect(self._open_iar_map)
         tools_menu.addAction(iar_map_action)
+        encoding_action = QAction("소스 인코딩 일괄 변환…", self)
+        encoding_action.triggered.connect(self._open_source_encoding_converter)
+        tools_menu.addAction(encoding_action)
         tools_menu.addSeparator()
         iar_debug_action = QAction("IAR 디버그 설정…", self)
         iar_debug_action.triggered.connect(self._open_iar_debug_settings)
@@ -731,6 +735,9 @@ class MainWindow(QMainWindow):
     def _open_github_repository(self) -> None:
         current_root = self.session.root or ""
         GitHubRepositoryDialog(current_root, self).exec()
+
+    def _open_source_encoding_converter(self) -> None:
+        SourceEncodingConverterDialog(self.session.root or "", self).exec()
 
     def _project_settings_group(self, root: str) -> str:
         return f"projects/{self.cache_store.path_for(root).stem}"
