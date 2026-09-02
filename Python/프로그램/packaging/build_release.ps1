@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
 $appName = "EmbedForge"
-$appVersion = "2.5.18"
+$appVersion = "2.5.19"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $icon = Join-Path $projectRoot "assets\CallHierarchyExplorer.ico"
@@ -74,8 +74,6 @@ try {
         --add-data "eeprom_sources.json;." `
         --collect-all tree_sitter_c `
         --collect-all clang `
-        --collect-binaries PySide6 `
-        --collect-binaries shiboken6 `
         app.py
     if ($LASTEXITCODE -ne 0) { throw "Installed application build failed." }
 
@@ -92,23 +90,11 @@ try {
         --add-data "eeprom_sources.json;." `
         --collect-all tree_sitter_c `
         --collect-all clang `
-        --collect-binaries PySide6 `
-        --collect-binaries shiboken6 `
         app.py
     if ($LASTEXITCODE -ne 0) { throw "Portable application build failed." }
 } finally {
     Pop-Location
 }
-
-# Ensure the onedir payload uses the exact Qt DLLs from this PySide6 runtime.
-$pysideSource = Join-Path $projectRoot ".venv\Lib\site-packages\PySide6"
-$pysideTarget = Join-Path $installedDistDir "_internal\PySide6"
-foreach ($qtFile in @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")) {
-    Copy-Item -LiteralPath (Join-Path $pysideSource $qtFile) -Destination (Join-Path $pysideTarget $qtFile) -Force
-}
-$platformTarget = Join-Path $pysideTarget "plugins\platforms"
-New-Item -ItemType Directory -Path $platformTarget -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $pysideSource "plugins\platforms\qwindows.dll") -Destination (Join-Path $platformTarget "qwindows.dll") -Force
 
 # Source-level smoke tests run before packaging. The frozen Qt/clang process can
 # retain native handles on some Windows hosts, so do not block artifact creation

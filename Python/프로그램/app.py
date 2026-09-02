@@ -2,7 +2,6 @@
 
 import sys
 import os
-import ctypes
 import traceback
 import re
 import html
@@ -24,12 +23,6 @@ def _configure_frozen_dll_search_path() -> None:
             os.add_dll_directory(str(directory))
     if pyside_root.is_dir() and os.name == "nt":
         ctypes.windll.kernel32.SetDllDirectoryW(str(pyside_root))
-        global _frozen_qt_handles
-        _frozen_qt_handles = []
-        for name in ("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll"):
-            path = pyside_root / name
-            if path.is_file():
-                _frozen_qt_handles.append(ctypes.WinDLL(str(path)))
     os.environ["PATH"] = os.pathsep.join(
         [str(directory) for directory in candidates if directory.is_dir()]
         + [os.environ.get("PATH", "")]
@@ -59,6 +52,26 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+
+def _write_dll_diagnostic() -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        diagnostic = Path(os.environ.get("TEMP", ".")) / "EmbedForge-dll-diagnostic.log"
+        diagnostic.write_text(
+            "qt_import=success\n"
+            "executable=" + str(Path(sys.executable).resolve()) + "\n"
+            "bundle_root=" + str(Path(getattr(sys, "_MEIPASS", "")).resolve()) + "\n"
+            "qt_plugin_path=" + os.environ.get("QT_PLUGIN_PATH", "") + "\n"
+            "qt_platform_path=" + os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH", "") + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+_write_dll_diagnostic()
+
 from analyzer import AnalysisResult, AnalyzerSession, CallView, build_call_view
 from project_cache import ProjectCacheStore
 from settings_dialog import ProjectSettingsDialog, normalize_exclusions
@@ -80,7 +93,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.18"
+APP_VERSION = "2.5.19"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
