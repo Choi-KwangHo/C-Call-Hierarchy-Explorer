@@ -6,7 +6,7 @@ import os
 from datetime import date
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, Signal, Slot
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 from github_repository import GitHubClient, GitHubRepositoryError, RepositoryRequest, detect_iar_projects
 
@@ -48,28 +48,30 @@ class _StageTimeline(QWidget):
             x=left+step*index; color=QColor("#C0392B") if index==self.failed else QColor("#2E8B57") if index<self.stage else QColor("#238CC5") if index==self.stage else QColor("#52616D")
             if index: painter.setPen(QPen(QColor("#2E8B57") if index<=self.stage else QColor("#52616D"),2)); painter.drawLine(int(x-step+9),y,int(x-9),y)
             painter.setBrush(color); painter.setPen(QPen(QColor("#EAF2F6"),2)); painter.drawEllipse(int(x-8),y-8,16,16)
-            painter.setPen(QColor("#F0F5F7")); painter.drawText(int(x-step/2),4,int(step),24,Qt.AlignCenter,label)
+            font=QFont(painter.font()); font.setPointSize(9); painter.setFont(font)
+            label_width=max(96,int(step)-8); label_left=max(0,min(self.width()-label_width,int(x-label_width/2)))
+            painter.setPen(QColor("#F0F5F7")); painter.drawText(label_left,4,label_width,24,Qt.AlignCenter,label)
 
 class GitHubRepositoryDialog(QDialog):
     """Background GitHub creation and first-upload manager."""
     def __init__(self, current_root: str = "", parent=None, settings: QSettings | None = None):
         super().__init__(parent); self.settings=settings or QSettings(); self.pool=QThreadPool(self); self.pool.setMaxThreadCount(1); self.worker=None; self.selected=None
-        self.setWindowTitle("GitHub Repository 생성 및 IAR 업로드"); self.resize(1050, 610)
+        self.setWindowTitle("GitHub Repository 생성 및 IAR 업로드"); self.resize(1280, 660); self.setMinimumWidth(1160)
         outer=QVBoxLayout(self); outer.addWidget(QLabel("Dashboard별 저장소를 조회합니다. ‘초기 업로드 필요’ 저장소만 최초 코드 업로드를 실행할 수 있습니다."))
         self.timeline=_StageTimeline(); outer.addWidget(self.timeline); self._stage(0)
-        splitter=QSplitter(Qt.Horizontal); outer.addWidget(splitter, 1); left=QWidget(); form=QFormLayout(left); splitter.addWidget(left)
-        self.dashboard=QComboBox(); self.dashboard.setEditable(True); self.dashboard.addItems(self._history("github/dashboardHistory", "https://github.com/Choi-KwangHo")); self.dashboard.currentTextChanged.connect(self._dashboard_changed)
+        splitter=QSplitter(Qt.Horizontal); outer.addWidget(splitter, 1); left=QWidget(); left.setMinimumWidth(500); form=QFormLayout(left); form.setLabelAlignment(Qt.AlignRight); form.setHorizontalSpacing(12); splitter.addWidget(left)
+        self.dashboard=QComboBox(); self.dashboard.setEditable(True); self.dashboard.setMinimumWidth(355); self.dashboard.addItems(self._history("github/dashboardHistory", "https://github.com/Choi-KwangHo")); self.dashboard.currentTextChanged.connect(self._dashboard_changed); self.dashboard.activated.connect(lambda _index:self._auto_refresh())
         self.name=QLineEdit(f"IAR-Firmware-{date.today():%Y%m%d}"); self.description=QLineEdit("EmbedForge에서 생성한 IAR 펌웨어 소스 저장소")
         self.token=QLineEdit(); self.token.setEchoMode(QLineEdit.Password); self.token.setPlaceholderText("Dashboard 선택 시 저장 토큰을 마스킹하여 표시")
-        self.root=QComboBox(); self.root.setEditable(True); self.root.addItems(self._history("github/localFolderHistory", current_root)); self.root.currentTextChanged.connect(self._update_mode)
+        self.root=QComboBox(); self.root.setEditable(True); self.root.setMinimumWidth(355); self.root.addItems(self._history("github/localFolderHistory", current_root)); self.root.currentTextChanged.connect(self._update_mode)
         browse=QPushButton("폴더 선택…"); browse.clicked.connect(self._choose_root); row=QHBoxLayout(); row.addWidget(self.root); row.addWidget(browse)
         self.mode=QLabel("Repository만 생성"); self.readme=QCheckBox("README 생성"); self.readme.setChecked(True)
         for label, widget in (("GitHub Dashboard",self.dashboard),("Repository name",self.name),("Description",self.description),("GitHub Token",self.token),("로컬 IAR 코드 폴더",row),("생성 모드",self.mode),("옵션",self.readme)): form.addRow(label,widget)
-        right=QWidget(); right_layout=QVBoxLayout(right); splitter.addWidget(right); splitter.setSizes([430,620]); right_layout.addWidget(QLabel("Repository 목록 · 빈 저장소는 ‘초기 업로드 필요’"))
-        self.tree=QTreeWidget(); self.tree.setHeaderLabels(["Repository","상태","공개"]); self.tree.itemSelectionChanged.connect(self._selected_changed); self.tree.setContextMenuPolicy(Qt.CustomContextMenu); self.tree.customContextMenuRequested.connect(self._context_menu); right_layout.addWidget(self.tree,1)
+        right=QWidget(); right.setMinimumWidth(610); right_layout=QVBoxLayout(right); splitter.addWidget(right); splitter.setSizes([520,760]); right_layout.addWidget(QLabel("Repository 목록 · 빈 저장소는 ‘초기 업로드 필요’"))
+        self.tree=QTreeWidget(); self.tree.setHeaderLabels(["Repository","상태","공개"]); self.tree.setColumnWidth(0,330); self.tree.setColumnWidth(1,190); self.tree.itemSelectionChanged.connect(self._selected_changed); self.tree.setContextMenuPolicy(Qt.CustomContextMenu); self.tree.customContextMenuRequested.connect(self._context_menu); right_layout.addWidget(self.tree,1)
         self.status=QLabel("Dashboard를 입력한 뒤 목록 새로고침을 누르십시오."); self.progress=QProgressBar(); self.progress.hide(); right_layout.addWidget(self.status); right_layout.addWidget(self.progress)
-        buttons=QHBoxLayout(); self.refresh=QPushButton("목록 새로고침"); self.refresh.clicked.connect(self._refresh); self.create=QPushButton("Repository 생성"); self.create.clicked.connect(self._create); self.upload=QPushButton("선택 저장소에 최초 커밋"); self.upload.setEnabled(False); self.upload.clicked.connect(self._upload); close=QPushButton("닫기"); close.clicked.connect(self.reject)
-        for button in (self.refresh,self.create,self.upload): buttons.addWidget(button)
+        buttons=QHBoxLayout(); self.refresh=QPushButton("목록 새로고침"); self.refresh.clicked.connect(self._refresh); self.new_mode=QPushButton("새 Repository 모드"); self.new_mode.clicked.connect(self._new_repository); self.create=QPushButton("Repository 생성"); self.create.clicked.connect(self._create); self.upload=QPushButton("선택 저장소에 최초 커밋"); self.upload.setEnabled(False); self.upload.clicked.connect(self._upload); close=QPushButton("닫기"); close.clicked.connect(self.reject)
+        for button in (self.refresh,self.new_mode,self.create,self.upload): buttons.addWidget(button)
         buttons.addStretch(1); buttons.addWidget(close); outer.addLayout(buttons); self._dashboard_changed(self.dashboard.currentText()); self._update_mode(self.root.currentText())
     def _history(self,key,default):
         value=self.settings.value(key,[]); values=[value] if isinstance(value,str) else list(value or []); return list(dict.fromkeys(([default] if default else [])+[str(x) for x in values if x]))
@@ -77,6 +79,8 @@ class GitHubRepositoryDialog(QDialog):
         if value: self.settings.setValue(key,([value]+[x for x in self._history(key,"") if x!=value])[:12])
     def _token_key(self): return "github/token/"+base64.urlsafe_b64encode(self.dashboard.currentText().strip().encode()).decode()
     def _dashboard_changed(self,_): self.token.setText(_unprotect(self.settings.value(self._token_key(),"")))
+    def _auto_refresh(self):
+        if self.token.text().strip() and self.worker is None: self._refresh()
     def _remember_token(self):
         protected=_protect(self.token.text())
         if protected: self.settings.setValue(self._token_key(),protected)
@@ -96,7 +100,7 @@ class GitHubRepositoryDialog(QDialog):
         self.status.setText(f"실패 단계: {self.timeline.labels[self.active_stage]} · {error}")
         QMessageBox.warning(self,"GitHub 작업 실패",f"실패 단계: {self.timeline.labels[self.active_stage]}\n\n{error}")
     def _done(self):
-        self.refresh.setEnabled(True); self.create.setEnabled(True); self.progress.hide()
+        self.worker=None; self.refresh.setEnabled(True); self.progress.hide()
         if not self.operation_failed: self._stage(5)
         self._selected_changed()
     def _progress(self,current,total,name):
@@ -120,11 +124,19 @@ class GitHubRepositoryDialog(QDialog):
             self._remember("github/dashboardHistory",request.dashboard_url); self._remember("github/localFolderHistory",request.local_path); self._remember_token(); self._start(lambda _:self._client().create_repository(request),"Repository 생성 중…",0)
         except GitHubRepositoryError as error: QMessageBox.warning(self,"입력 오류",str(error))
     def _selected_changed(self):
-        rows=self.tree.selectedItems(); self.selected=rows[0].data(0,Qt.UserRole) if rows else None; self.upload.setEnabled(bool(self.selected and self.selected.is_empty and self.root.currentText().strip()))
+        rows=self.tree.selectedItems(); self.selected=rows[0].data(0,Qt.UserRole) if rows else None
+        upload_mode=bool(self.selected and self.selected.is_empty)
+        for control in (self.name,self.description,self.readme): control.setEnabled(not upload_mode)
+        self.create.setEnabled(not upload_mode)
+        self.upload.setEnabled(bool(upload_mode and self.root.currentText().strip()))
+        if upload_mode: self.mode.setText(f"선택 저장소 최초 커밋 · {self.selected.full_name}"); self.status.setText("최초 커밋 모드: Dashboard, Token, 로컬 IAR 코드 폴더만 변경할 수 있습니다.")
     def _context_menu(self, point):
         menu=QMenu(self); create=menu.addAction("새 Repository 생성"); create.triggered.connect(self._new_repository); menu.exec(self.tree.viewport().mapToGlobal(point))
     def _new_repository(self):
-        self.selected=None; self.tree.clearSelection(); self.name.setFocus(); self.name.selectAll(); self.status.setText("새 Repository 이름과 설명을 입력한 뒤 생성하십시오.")
+        self.selected=None; self.tree.clearSelection()
+        for control in (self.name,self.description,self.readme): control.setEnabled(True)
+        self.create.setEnabled(True); self.upload.setEnabled(False); self.mode.setText("Repository만 생성")
+        self.name.setFocus(); self.name.selectAll(); self.status.setText("새 Repository 이름과 설명을 입력한 뒤 생성하십시오.")
     def _upload(self):
         if not self.selected:return
         request=self._request(); request.name=self.selected.name
