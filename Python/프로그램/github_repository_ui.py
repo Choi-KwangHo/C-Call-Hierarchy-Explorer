@@ -3,12 +3,13 @@ from __future__ import annotations
 import base64
 import ctypes
 import os
+import threading
 from datetime import date
 
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
-from github_repository import GitHubClient, GitHubRepositoryError, RepositoryRequest, detect_iar_projects
+from github_repository import GitHubClient, GitHubRepositoryError, GitHubUploadCancelled, RepositoryRequest, detect_iar_projects
 
 class _Blob(ctypes.Structure):
     _fields_=[("cbData",ctypes.c_uint), ("pbData",ctypes.POINTER(ctypes.c_byte))]
@@ -28,12 +29,13 @@ def _unprotect(value: str) -> str:
     finally: ctypes.windll.kernel32.LocalFree(outgoing.pbData)
 
 class _Signals(QObject):
-    ready = Signal(object); progress = Signal(int, int, str); error = Signal(str); done = Signal()
+    ready = Signal(object); progress = Signal(int, int, str); error = Signal(str); cancelled = Signal(str); done = Signal()
 class _Worker(QRunnable):
-    def __init__(self, action): super().__init__(); self.action=action; self.signals=_Signals()
+    def __init__(self, action, cancel_event): super().__init__(); self.action=action; self.cancel_event=cancel_event; self.signals=_Signals()
     @Slot()
     def run(self):
-        try: self.signals.ready.emit(self.action(self.signals.progress.emit))
+        try: self.signals.ready.emit(self.action(self.signals.progress.emit, self.cancel_event))
+        except GitHubUploadCancelled as error: self.signals.cancelled.emit(str(error))
         except Exception as error: self.signals.error.emit(str(error))
         finally: self.signals.done.emit()
 
@@ -55,7 +57,7 @@ class _StageTimeline(QWidget):
 class GitHubRepositoryDialog(QDialog):
     """Background GitHub creation and first-upload manager."""
     def __init__(self, current_root: str = "", parent=None, settings: QSettings | None = None):
-        super().__init__(parent); self.settings=settings or QSettings(); self.pool=QThreadPool(self); self.pool.setMaxThreadCount(1); self.worker=None; self.selected=None
+        super().__init__(parent); self.settings=settings or QSettings(); self.pool=QThreadPool(self); self.pool.setMaxThreadCount(1); self.worker=None; self.selected=None; self.cancel_event=None; self.close_when_stopped=False; self.cancelled_operation=False
         self.setWindowTitle("GitHub Repository 생성 및 IAR 업로드"); self.resize(1280, 660); self.setMinimumWidth(1160)
         outer=QVBoxLayout(self); outer.addWidget(QLabel("Dashboard별 저장소를 조회합니다. ‘초기 업로드 필요’ 저장소만 최초 코드 업로드를 실행할 수 있습니다."))
         self.timeline=_StageTimeline(); outer.addWidget(self.timeline); self._stage(0)
@@ -70,7 +72,7 @@ class GitHubRepositoryDialog(QDialog):
         right=QWidget(); right.setMinimumWidth(610); right_layout=QVBoxLayout(right); splitter.addWidget(right); splitter.setSizes([520,760]); right_layout.addWidget(QLabel("Repository 목록 · 빈 저장소는 ‘초기 업로드 필요’"))
         self.tree=QTreeWidget(); self.tree.setHeaderLabels(["Repository","상태","공개"]); self.tree.setColumnWidth(0,330); self.tree.setColumnWidth(1,190); self.tree.itemSelectionChanged.connect(self._selected_changed); self.tree.setContextMenuPolicy(Qt.CustomContextMenu); self.tree.customContextMenuRequested.connect(self._context_menu); right_layout.addWidget(self.tree,1)
         self.status=QLabel("Dashboard를 입력한 뒤 목록 새로고침을 누르십시오."); self.progress=QProgressBar(); self.progress.hide(); right_layout.addWidget(self.status); right_layout.addWidget(self.progress)
-        buttons=QHBoxLayout(); self.refresh=QPushButton("목록 새로고침"); self.refresh.clicked.connect(self._refresh); self.new_mode=QPushButton("새 Repository 모드"); self.new_mode.clicked.connect(self._new_repository); self.create=QPushButton("Repository 생성"); self.create.clicked.connect(self._create); self.upload=QPushButton("선택 저장소에 최초 커밋"); self.upload.setEnabled(False); self.upload.clicked.connect(self._upload); close=QPushButton("닫기"); close.clicked.connect(self.reject)
+        buttons=QHBoxLayout(); self.refresh=QPushButton("목록 새로고침"); self.refresh.clicked.connect(self._refresh); self.new_mode=QPushButton("새 Repository 모드"); self.new_mode.clicked.connect(self._new_repository); self.create=QPushButton("Repository 생성"); self.create.clicked.connect(self._create); self.upload=QPushButton("선택 저장소에 코드 업로드 / 복구"); self.upload.setEnabled(False); self.upload.clicked.connect(self._upload); close=QPushButton("닫기"); close.clicked.connect(self.close)
         for button in (self.refresh,self.new_mode,self.create,self.upload): buttons.addWidget(button)
         buttons.addStretch(1); buttons.addWidget(close); outer.addLayout(buttons); self._dashboard_changed(self.dashboard.currentText()); self._update_mode(self.root.currentText())
     def _history(self,key,default):
@@ -92,44 +94,60 @@ class GitHubRepositoryDialog(QDialog):
     def _client(self): return GitHubClient(self.token.text())
     def _start(self,work,label,stage=0):
         for button in (self.refresh,self.create,self.upload): button.setEnabled(False)
-        self.operation_failed=False; self.active_stage=stage; self._stage(stage); self.progress.setRange(0,0); self.progress.show(); self.status.setText(label); self.worker=_Worker(work); self.worker.signals.ready.connect(self._ready); self.worker.signals.progress.connect(self._progress); self.worker.signals.error.connect(self._failed); self.worker.signals.done.connect(self._done); self.pool.start(self.worker)
+        self.operation_failed=False; self.cancelled_operation=False; self.active_stage=stage; self._stage(stage); self.progress.setFormat("%p%"); self.progress.setRange(0,0); self.progress.show(); self.status.setText(label); self.cancel_event=threading.Event(); self.worker=_Worker(work,self.cancel_event); self.worker.signals.ready.connect(self._ready); self.worker.signals.progress.connect(self._progress); self.worker.signals.error.connect(self._failed); self.worker.signals.cancelled.connect(self._cancelled); self.worker.signals.done.connect(self._done); self.pool.start(self.worker)
     def _stage(self, active): self.active_stage=active; self.timeline.set_stage(active)
     def _failed(self,error):
         self.operation_failed=True
         self.timeline.set_failed(self.active_stage)
         self.status.setText(f"실패 단계: {self.timeline.labels[self.active_stage]} · {error}")
         QMessageBox.warning(self,"GitHub 작업 실패",f"실패 단계: {self.timeline.labels[self.active_stage]}\n\n{error}")
+    def _cancelled(self, message):
+        self.cancelled_operation=True
+        self.status.setText(f"중단 완료 · {message}")
     def _done(self):
-        self.worker=None; self.refresh.setEnabled(True); self.progress.hide()
-        if not self.operation_failed: self._stage(5)
+        self.worker=None; self.cancel_event=None; self.refresh.setEnabled(True); self.progress.hide()
+        if not self.operation_failed and not self.cancelled_operation: self._stage(5)
         self._selected_changed()
+        if self.close_when_stopped:
+            self.close_when_stopped=False; self.close()
     def _progress(self,current,total,name):
-        self._stage(2 if current == 0 else 3); self.progress.setRange(0,max(1,total)); self.progress.setValue(current); prefix="최초 커밋 준비" if current == 0 else f"파일 전송 {current}/{total}"; self.status.setText(f"{prefix}: {name}")
+        if current < 0:
+            stage=min(5, abs(current)); self._stage(stage)
+            self.progress.setRange(0, 6); self.progress.setValue(stage)
+            self.status.setText(name.replace(f"[STAGE:{stage}] ", ""))
+            return
+        self._stage(3); self.progress.setRange(0,max(1,total)); self.progress.setValue(current); self.status.setText(f"파일 전송 {current}/{total}: {name}")
     def _ready(self,result):
         if isinstance(result,list) and (not result or hasattr(result[0], "is_empty")):
             self.tree.clear()
             for repo in result:
                 item=QTreeWidgetItem([repo.name,"초기 업로드 필요" if repo.is_empty else "커밋 있음","Private" if repo.private else "Public"]); item.setData(0,Qt.UserRole,repo); self.tree.addTopLevelItem(item)
             self.status.setText(f"저장소 {len(result)}개 조회 완료")
-        else: self._stage(4); self.status.setText("커밋 검증 완료 · 진행 마무리 중")
+        else:
+            self._stage(4)
+            if result.get("uploaded_files", 0) == 0:
+                self.status.setText("동일 파일 확인 완료 · 원격 저장소는 이미 최신 상태입니다.")
+            else: self.status.setText(f"커밋 검증 완료 · {result['uploaded_files']:,}개 파일 반영 · 진행 마무리 중")
     def _refresh(self):
         try:
-            request=self._request(); request.owner; self._remember("github/dashboardHistory",request.dashboard_url); self._remember_token(); self._start(lambda _:self._client().list_repositories(request),"Repository 목록 조회 중…")
+            request=self._request(); request.owner; self._remember("github/dashboardHistory",request.dashboard_url); self._remember_token(); self._start(lambda _progress,_cancel:self._client().list_repositories(request),"Repository 목록 조회 중…")
         except GitHubRepositoryError as error: QMessageBox.warning(self,"입력 오류",str(error))
     def _create(self):
         try:
             request=self._request(); request.validate(); self._stage(0)
             if not self.token.text().strip(): raise GitHubRepositoryError("GitHub Token을 입력하십시오.")
             if QMessageBox.question(self,"생성 확인",f"{request.owner}/{request.name} 저장소를 생성합니까?")!=QMessageBox.Yes:return
-            self._remember("github/dashboardHistory",request.dashboard_url); self._remember("github/localFolderHistory",request.local_path); self._remember_token(); self._start(lambda _:self._client().create_repository(request),"Repository 생성 중…",0)
+            self._remember("github/dashboardHistory",request.dashboard_url); self._remember("github/localFolderHistory",request.local_path); self._remember_token(); self._start(lambda _progress,_cancel:self._client().create_repository(request),"Repository 생성 중…",0)
         except GitHubRepositoryError as error: QMessageBox.warning(self,"입력 오류",str(error))
     def _selected_changed(self):
         rows=self.tree.selectedItems(); self.selected=rows[0].data(0,Qt.UserRole) if rows else None
-        upload_mode=bool(self.selected and self.selected.is_empty)
+        upload_mode=bool(self.selected)
         for control in (self.name,self.description,self.readme): control.setEnabled(not upload_mode)
         self.create.setEnabled(not upload_mode)
         self.upload.setEnabled(bool(upload_mode and self.root.currentText().strip()))
-        if upload_mode: self.mode.setText(f"선택 저장소 최초 커밋 · {self.selected.full_name}"); self.status.setText("최초 커밋 모드: Dashboard, Token, 로컬 IAR 코드 폴더만 변경할 수 있습니다.")
+        if upload_mode:
+            self.mode.setText(f"선택 저장소 업로드 / 자동 복구 · {self.selected.full_name}")
+            self.status.setText("동일 파일은 자동 건너뛰고 누락 파일만 하나의 Git 커밋으로 복구합니다. 다른 파일은 덮어쓰지 않습니다.")
     def _context_menu(self, point):
         menu=QMenu(self); create=menu.addAction("새 Repository 생성"); create.triggered.connect(self._new_repository); menu.exec(self.tree.viewport().mapToGlobal(point))
     def _new_repository(self):
@@ -140,5 +158,14 @@ class GitHubRepositoryDialog(QDialog):
     def _upload(self):
         if not self.selected:return
         request=self._request(); request.name=self.selected.name
-        if QMessageBox.question(self,"최초 커밋 확인",f"{self.selected.full_name}에 제외 규칙을 통과한 파일을 업로드합니까?")!=QMessageBox.Yes:return
-        self._remember("github/localFolderHistory",request.local_path); self._start(lambda progress:self._client().upload_project(request,progress=progress),"파일 검사 중…",1)
+        if QMessageBox.question(self,"코드 업로드 확인",f"{self.selected.full_name}에 파일을 업로드/복구합니까?\n\n동일 파일은 건너뛰며 다른 원격 파일은 덮어쓰지 않습니다.")!=QMessageBox.Yes:return
+        self._remember("github/localFolderHistory",request.local_path); self._start(lambda progress,cancel:self._client().upload_project(request,progress=progress,cancel_event=cancel),"파일 검사 중…",1)
+    def closeEvent(self, event):
+        if self.worker is not None:
+            self.close_when_stopped=True
+            if self.cancel_event: self.cancel_event.set()
+            self.status.setText("중단 중… 안전하게 Git 작업을 종료한 뒤 창을 닫습니다.")
+            self.progress.setFormat("중단 처리 중… %v/%m"); self.progress.show()
+            event.ignore()
+            return
+        event.accept()

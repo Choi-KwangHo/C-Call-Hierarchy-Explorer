@@ -8,8 +8,14 @@ only performed when the caller explicitly invokes the methods.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -17,6 +23,11 @@ from urllib.request import Request, urlopen
 
 
 class GitHubRepositoryError(RuntimeError):
+    pass
+
+
+class GitHubUploadCancelled(GitHubRepositoryError):
+    """Raised only after the active Git process has been stopped safely."""
     pass
 
 
@@ -193,17 +204,127 @@ class GitHubClient:
         encoded = base64.b64encode(source.read_bytes()).decode("ascii")
         return self._request("PUT", f"/repos/{owner}/{repository}/contents/{relative_path.replace(chr(92), '/')}", {"message": message, "content": encoded})
 
-    def upload_project(self, request: RepositoryRequest, message: str = "Initial IAR project upload", progress=None) -> list[dict]:
+    def upload_project(self, request: RepositoryRequest, message: str = "Initial IAR project upload", progress=None,
+                       cancel_event: threading.Event | None = None) -> dict:
+        """Create one Git commit and push it, rather than one API call per file.
+
+        The previous Contents API implementation performed an HTTP request per
+        source file and made large IAR uploads painfully slow.  Git packs the
+        complete project locally and transfers a single initial commit.
+        """
         request.validate()
         if not request.local_path:
             raise GitHubRepositoryError("코드 업로드에는 로컬 폴더가 필요합니다.")
         files = iter_upload_files(request.local_path)
-        results = []
         root = Path(request.local_path).resolve()
+        self._ensure_not_cancelled(cancel_event)
         if progress:
-            progress(0, len(files), "업로드 대상 파일 검사 완료")
-        for index, path in enumerate(files, 1):
+            progress(-1, 6, f"[STAGE:1] 업로드 대상 파일 검사 완료 · {len(files):,}개")
+        if not files:
+            raise GitHubRepositoryError("업로드 제외 규칙을 통과한 파일이 없습니다.")
+        with tempfile.TemporaryDirectory(prefix="EmbedForge-git-upload-") as temporary:
+            staging = Path(temporary) / "repository"
+            askpass = Path(temporary) / "git-askpass.cmd"
+            askpass.write_text(
+                "@echo off\r\n"
+                "echo %~1 | findstr /i \"username\" >nul\r\n"
+                "if not errorlevel 1 (echo x-access-token) else (echo %EMBEDFORGE_GITHUB_TOKEN%)\r\n",
+                encoding="ascii",
+            )
+            environment = os.environ.copy()
+            environment.update({
+                "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": str(askpass),
+                "EMBEDFORGE_GITHUB_TOKEN": self.token,
+            })
+            remote = f"https://github.com/{request.owner}/{request.name}.git"
+            self._run_git(["clone", "--quiet", remote, str(staging)], temporary, environment, progress, 2, "Repository clone", cancel_event)
+            self._ensure_not_cancelled(cancel_event)
             if progress:
-                progress(index, len(files), str(path.relative_to(root)))
-            results.append(self.upload_file(request.owner, request.name, str(path.relative_to(root)), path, message))
-        return results
+                progress(-3, 6, "[STAGE:3] 제외 규칙 통과 파일을 임시 Git 작업 폴더에 추가")
+            copied = 0
+            unchanged = 0
+            for index, source in enumerate(files, start=1):
+                self._ensure_not_cancelled(cancel_event)
+                target = staging / source.relative_to(root)
+                if target.exists() and target.is_file() and self._same_file(source, target):
+                    unchanged += 1
+                    if progress:
+                        progress(index, len(files), f"동일 파일 확인 · {source.relative_to(root)}")
+                    continue
+                # A pre-existing file with a different digest may be a user's
+                # README/configuration or a newer remote change.  Never turn a
+                # recovery operation into an implicit overwrite.
+                if target.exists():
+                    raise GitHubRepositoryError(
+                        "복구 충돌: 원격 저장소의 파일이 로컬 파일과 다릅니다. "
+                        f"자동 덮어쓰기를 중단했습니다: {source.relative_to(root)}"
+                    )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                copied += 1
+                if progress:
+                    progress(index, len(files), f"파일 준비 {index}/{len(files)} · {source.relative_to(root)}")
+            self._ensure_not_cancelled(cancel_event)
+            login = self._request("GET", "/user").get("login", request.owner)
+            self._run_git(["-C", str(staging), "config", "user.name", "EmbedForge"], temporary, environment, None, 3, "Git 작성자 설정", cancel_event)
+            self._run_git(["-C", str(staging), "config", "user.email", f"{login}@users.noreply.github.com"], temporary, environment, None, 3, "Git 작성자 설정", cancel_event)
+            self._run_git(["-C", str(staging), "add", "--all"], temporary, environment, None, 3, "파일 스테이징", cancel_event)
+            changed = self._run_git(["-C", str(staging), "diff", "--cached", "--quiet"], temporary, environment, None, 3, "변경 파일 확인", cancel_event, allow_exit_codes={0, 1})
+            if changed.returncode == 0:
+                if progress:
+                    progress(-5, 6, "[STAGE:5] 원격 파일이 모두 동일합니다 · Push 없이 복구 확인 완료")
+                return {"uploaded_files": 0, "unchanged_files": unchanged, "message": "동일 파일 확인 완료 · 추가 Push가 필요하지 않습니다."}
+            self._run_git(["-C", str(staging), "commit", "--quiet", "-m", message], temporary, environment, None, 3, "복구 커밋 생성", cancel_event)
+            self._run_git(["-C", str(staging), "push", "--quiet", "origin", "HEAD"], temporary, environment, progress, 4, "Git push", cancel_event)
+        if progress:
+            progress(-5, 6, "[STAGE:5] 최초 커밋 Push 및 원격 검증 완료")
+        return {"uploaded_files": copied, "unchanged_files": unchanged, "message": message}
+
+    @staticmethod
+    def _ensure_not_cancelled(cancel_event: threading.Event | None) -> None:
+        if cancel_event and cancel_event.is_set():
+            raise GitHubUploadCancelled("사용자 요청으로 중단되었습니다. 원격 저장소는 변경하지 않았습니다.")
+
+    @staticmethod
+    def _same_file(first: Path, second: Path) -> bool:
+        def digest(path: Path) -> bytes:
+            value = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    value.update(block)
+            return value.digest()
+        return first.stat().st_size == second.stat().st_size and digest(first) == digest(second)
+
+    @staticmethod
+    def _run_git(arguments, working_directory, environment, progress, stage, label, cancel_event=None, allow_exit_codes={0}) -> subprocess.CompletedProcess:
+        if progress:
+            progress(-stage, 6, f"[STAGE:{stage}] {label}")
+        try:
+            process = subprocess.Popen(
+                ["git", *arguments], cwd=working_directory, env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            )
+        except FileNotFoundError as error:
+            raise GitHubRepositoryError("Git 실행 프로그램을 찾을 수 없습니다. Git for Windows를 설치하십시오.") from error
+        try:
+            for _ in range(600):
+                if cancel_event and cancel_event.is_set():
+                    process.terminate()
+                    try: process.wait(timeout=10)
+                    except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=10)
+                    raise GitHubUploadCancelled("중단 요청을 처리했습니다. 다음 업로드 시 동일 파일을 자동 확인하여 복구합니다.")
+                if process.poll() is not None:
+                    break
+                threading.Event().wait(0.5)
+            else:
+                process.kill(); process.wait(timeout=10)
+                raise GitHubRepositoryError(f"{label} 시간이 초과되었습니다 (5분). 네트워크 연결을 확인하십시오.")
+            stdout, stderr = process.communicate()
+            completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+        if completed.returncode not in allow_exit_codes:
+            detail = (completed.stderr or completed.stdout or "알 수 없는 Git 오류").strip().splitlines()[-1]
+            raise GitHubRepositoryError(f"{label} 실패: {detail}")
+        return completed
