@@ -63,7 +63,7 @@ from window_state import apply_dark_title_bar, restore_window_state, save_window
 
 
 APP_NAME = "EmbedForge"
-APP_VERSION = "2.5.23"
+APP_VERSION = "2.5.24"
 APP_PUBLISHER = "Call Hierarchy Tools"
 
 MAIN_WINDOW_STYLE = """
@@ -734,7 +734,7 @@ class MainWindow(QMainWindow):
 
     def _open_github_repository(self) -> None:
         current_root = self.session.root or ""
-        GitHubRepositoryDialog(current_root, self).exec()
+        GitHubRepositoryDialog(current_root, self, self.settings).exec()
 
     def _open_source_encoding_converter(self) -> None:
         SourceEncodingConverterDialog(self.session.root or "", self).exec()

@@ -58,6 +58,17 @@ class GitHubRepositoryTests(unittest.TestCase):
         client.create_repository(request)
         self.assertEqual(calls[0][0:2], ("POST", "/orgs/Esol-Lab/repos"))
 
+    def test_repository_list_marks_empty_repository_for_initial_upload(self):
+        request = RepositoryRequest("https://github.com/Choi-KwangHo", "demo")
+        client = GitHubClient("test-token", api_base="https://example.invalid")
+        client._request = lambda *_args, **_kwargs: [
+            {"name": "empty", "full_name": "Choi-KwangHo/empty", "html_url": "https://github.com/Choi-KwangHo/empty", "size": 0, "private": True},
+            {"name": "ready", "full_name": "Choi-KwangHo/ready", "html_url": "https://github.com/Choi-KwangHo/ready", "size": 12, "private": False},
+        ]
+        listed = client.list_repositories(request)
+        self.assertTrue(listed[0].is_empty)
+        self.assertFalse(listed[1].is_empty)
+
 
 if __name__ == "__main__":
     unittest.main()

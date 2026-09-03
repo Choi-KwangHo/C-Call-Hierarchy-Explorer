@@ -20,6 +20,15 @@ class GitHubRepositoryError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class RepositoryInfo:
+    name: str
+    full_name: str
+    html_url: str
+    is_empty: bool
+    private: bool
+
+
 @dataclass(slots=True)
 class RepositoryRequest:
     dashboard_url: str
@@ -168,12 +177,33 @@ class GitHubClient:
                 ) from error
             raise
 
+    def list_repositories(self, request: RepositoryRequest) -> list[RepositoryInfo]:
+        request.owner
+        path = f"/orgs/{request.owner}/repos?per_page=100&sort=updated" if request.is_organization else "/user/repos?affiliation=owner&per_page=100&sort=updated"
+        data = self._request("GET", path)
+        if not isinstance(data, list):
+            return []
+        return [RepositoryInfo(
+            name=str(value.get("name", "")), full_name=str(value.get("full_name", "")),
+            html_url=str(value.get("html_url", "")), is_empty=int(value.get("size", 0) or 0) == 0,
+            private=bool(value.get("private", False)),
+        ) for value in data]
+
     def upload_file(self, owner: str, repository: str, relative_path: str, source: Path, message: str = "Initial IAR project upload") -> dict:
         encoded = base64.b64encode(source.read_bytes()).decode("ascii")
         return self._request("PUT", f"/repos/{owner}/{repository}/contents/{relative_path.replace(chr(92), '/')}", {"message": message, "content": encoded})
 
-    def upload_project(self, request: RepositoryRequest, message: str = "Initial IAR project upload") -> list[dict]:
+    def upload_project(self, request: RepositoryRequest, message: str = "Initial IAR project upload", progress=None) -> list[dict]:
         request.validate()
         if not request.local_path:
             raise GitHubRepositoryError("코드 업로드에는 로컬 폴더가 필요합니다.")
-        return [self.upload_file(request.owner, request.name, str(path.relative_to(Path(request.local_path).resolve())), path, message) for path in iter_upload_files(request.local_path)]
+        files = iter_upload_files(request.local_path)
+        results = []
+        root = Path(request.local_path).resolve()
+        if progress:
+            progress(0, len(files), "업로드 대상 파일 검사 완료")
+        for index, path in enumerate(files, 1):
+            if progress:
+                progress(index, len(files), str(path.relative_to(root)))
+            results.append(self.upload_file(request.owner, request.name, str(path.relative_to(root)), path, message))
+        return results
